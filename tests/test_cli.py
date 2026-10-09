@@ -59,7 +59,7 @@ class CliTests(unittest.TestCase):
                 "update_evidence": [{"source_id": current_id, "quote": "Đã bàn giao API"}],
                 "findings": [
                     {"rule": "Closure Incomplete", "severity": "Suggestion", "severity_status": "proposed", "explanation": "Thiếu checkpoint", "evidence": [{"source_id": current_id, "quote": "Đã bàn giao API"}], "question_for_PM": "Khi nào tiếp tục?"},
-                    {"rule": "Status Ambiguous", "severity": None, "severity_status": "unresolved", "explanation": "Chưa rõ trạng thái", "evidence": [{"source_id": current_id, "quote": "Đã bàn giao API"}], "question_for_PM": None},
+                    {"rule": "Status Ambiguous", "severity": None, "severity_status": "unresolved", "explanation": "Chưa rõ trạng thái", "evidence": [{"source_id": current_id, "quote": "Đã bàn giao API"}], "question_for_PM": "Có thể xác nhận trạng thái bàn giao?"},
                 ], "requires_review": True, "review_reasons": [], "policy_questions": ["Severity unresolved"],
             }]}
             results = iter([extracted, assessed])

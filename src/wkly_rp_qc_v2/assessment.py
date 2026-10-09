@@ -39,7 +39,7 @@ def _finding_schema() -> JsonDict:
     return _obj({
         "rule": _enum(RULES), "severity": _nullable_enum(SEVERITIES), "severity_status": _enum(SEVERITY_STATUS),
         "explanation": {"type": "string"}, "evidence": _array(_quote_schema()),
-        "question_for_PM": _nullable("string"),
+        "question_for_PM": {"type": "string"},
     }, ["rule", "severity", "severity_status", "explanation", "evidence", "question_for_PM"])
 
 
@@ -199,7 +199,7 @@ def validate_assessment(payload: JsonDict, commitments: list[JsonDict], sources:
             if finding["severity"] is None and finding["severity_status"] != "unresolved":
                 raise ValueError("Null severity must be unresolved")
             _string(finding["explanation"], "finding explanation", nonempty=True)
-            _string(finding["question_for_PM"], "question_for_PM", nullable=True)
+            _string(finding["question_for_PM"], "question_for_PM", nonempty=True)
             weeks = {"previous", "current"} if finding["rule"] == "Missing Closure" else {"current"}
             _evidence(finding["evidence"], sources, "finding evidence", weeks)
             if finding["rule"] == "Missing Closure" and not any(

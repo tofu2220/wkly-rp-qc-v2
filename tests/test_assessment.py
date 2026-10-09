@@ -105,6 +105,17 @@ class AssessmentTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "prior plan evidence"):
             validate_assessment({"assessments": [result]}, [COMMITMENT], SOURCES)
 
+    def test_findings_require_a_clarification_question(self):
+        result = assessment()
+        result["findings"] = [{
+            "rule": "Status Ambiguous", "severity": None, "severity_status": "unresolved",
+            "explanation": "The source does not state whether the handoff is complete.",
+            "evidence": [{"source_id": "C1", "quote": "Đã bàn giao API"}], "question_for_PM": None,
+        }]
+        result["requires_review"] = True
+        with self.assertRaisesRegex(ValueError, "question_for_PM"):
+            validate_assessment({"assessments": [result]}, [COMMITMENT], SOURCES)
+
     def test_prompts_pin_policy_and_reporting_distinctions(self):
         extraction = extraction_messages({"previous_sheet": "prior"}, SOURCES, {})
         assessment_prompt = assessment_messages([COMMITMENT], {"current_sheet": "current", "current_rows": []}, SOURCES, {}, "Zurich severity mentor-confirmed")

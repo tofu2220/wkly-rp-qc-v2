@@ -50,4 +50,4 @@ Selection was checked against the actual normalized export:
 
 The normalized export has null narrative values for blank workbook cells; selection preserves them as blank candidate fields and does not create evidence from them. Reference counts (10, 11, and 3) are review aids, not extraction constraints. Live extraction/comparison and semantic completeness review are blocked because `OPENROUTER_API_KEY` was not configured during verification. No generated model findings have been treated as ground truth.
 
-Verification results: `.venv/bin/python -m unittest discover -s tests -v` — 23 tests passed; `ruff check src tests` — passed; `basedpyright src` — 0 errors and 230 warnings (dynamic JSON/dictionary typing and unused-result diagnostics); `uv run wkly-rp-qc-v2 --help` — installed entry point works.
+Verification results: `.venv/bin/python -m unittest discover -s tests -v` — 24 tests passed; `ruff check src tests` — passed; `basedpyright src` — 0 errors and 230 warnings (dynamic JSON/dictionary typing and unused-result diagnostics); `uv run wkly-rp-qc-v2 --help` — installed entry point works.
