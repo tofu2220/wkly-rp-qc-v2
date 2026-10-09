@@ -78,6 +78,16 @@ class EvidenceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "source reference"):
             select_scope([invalid], "previous", "current", "SMART PARKING", "PTSP", [])
 
+    def test_normalized_null_narratives_are_blank_fields_not_invalid_text(self):
+        current = row("current", 8, plan="")
+        current["actual"] = None
+        current["issue_risk"] = None
+        scope = select_scope(
+            [row("previous", 7), current], "previous", "current", "SMART PARKING", "PTSP", []
+        )
+        self.assertIsNone(scope["current_rows"][0]["actual"])
+        self.assertNotIn("issue_risk", [source["field"] for source in build_sources(scope).values()])
+
     def test_checkpoint_uses_historical_period_and_unknown_for_ambiguous_dates(self):
         scope = select_scope(
             [row("BC Tuần 27.07-01.08", 7), row("BC Tuần 03.08-08.08", 8)],

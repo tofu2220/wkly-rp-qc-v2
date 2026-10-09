@@ -37,3 +37,17 @@ Each invocation creates a unique UTC timestamped child under `--output` and prin
 Failures preserve `failure.json`, `run_notes.md`, and any response received so far. They do not publish a successful review/comparison. Exit status is 2 for configuration/input errors and 1 for provider, validation, or output failures.
 
 Checkpoint interpretation uses the reporting periods in the historical sheets, never today's date. Without supported year context, ambiguous and year-crossing date comparisons remain unknown. Reference examples and draft severities include proposed and unresolved decisions; generated comparisons require human semantic review. Structural validation confirms exact quotations and source references, not extraction completeness or semantic accuracy.
+
+## Offline verification (2026-10-09)
+
+Selection was checked against the actual normalized export:
+
+| Requested project | Previous sheet resolved | Current sheet resolved | Previous PTSP rows | Current project rows / roles | Nonempty evidence sources |
+|---|---|---|---:|---|---:|
+| SMART PARKING | `BC Tuần 31.08 - 05.09` | `BC Tuần 07.09 - 12.09` | 1 | 9 rows / 8 roles | 20 |
+| DEPOT GSM (`ANAT GSM` alias) | `BC Tuần 31.08 - 05.09` | `BC Tuần 07.09 - 12.09` | 1 | 8 rows / 8 roles | 19 |
+| ANAT Công trường | `BC Tuần 27.07 - 01.08 ` (source name includes trailing whitespace) | `BC Tuần 03.08 - 07.08` | 1 | 5 rows / 5 roles | 11 |
+
+The normalized export has null narrative values for blank workbook cells; selection preserves them as blank candidate fields and does not create evidence from them. Reference counts (10, 11, and 3) are review aids, not extraction constraints. Live extraction/comparison and semantic completeness review are blocked because `OPENROUTER_API_KEY` was not configured during verification. No generated model findings have been treated as ground truth.
+
+Verification results: `.venv/bin/python -m unittest discover -s tests -v` — 23 tests passed; `ruff check src tests` — passed; `basedpyright src` — 0 errors and 230 warnings from the dynamic JSON-dictionary boundary; `uv run wkly-rp-qc-v2 --help` — installed entry point works.

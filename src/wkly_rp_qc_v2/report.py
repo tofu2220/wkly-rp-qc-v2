@@ -1,7 +1,11 @@
 import csv
 import html
+import io
 import json
 from pathlib import Path
+from typing import Any, cast
+
+JsonDict = dict[str, Any]
 
 
 CSV_FIELDS = (
@@ -19,7 +23,7 @@ def _cell(value: object) -> str:
     return html.escape(str(value or ""), quote=False).replace("|", r"\|").replace("\r\n", "\n").replace("\n", "<br>").replace("\r", "<br>")
 
 
-def _location(evidence: list[dict], sources: dict) -> str:
+def _location(evidence: list[JsonDict], sources: JsonDict) -> str:
     locations = []
     for item in evidence:
         source = sources[item["source_id"]]
@@ -27,7 +31,7 @@ def _location(evidence: list[dict], sources: dict) -> str:
     return "; ".join(dict.fromkeys(locations)) or "—"
 
 
-def _finding_text(findings: list[dict], sources: dict) -> str:
+def _finding_text(findings: list[JsonDict], sources: JsonDict) -> str:
     if not findings:
         return "Không có phát hiện"
     rendered = []
@@ -44,7 +48,7 @@ def _finding_text(findings: list[dict], sources: dict) -> str:
 
 
 def write_reports(
-    run_dir: Path, scope: dict, sources: dict, commitments: list[dict], assessments: list[dict], metadata: dict
+    run_dir: Path, scope: JsonDict, sources: JsonDict, commitments: list[JsonDict], assessments: list[JsonDict], metadata: JsonDict
 ) -> None:
     by_id = {item["plan_id"]: item for item in assessments}
     findings_count = sum(len(item.get("findings", [])) for item in assessments)
@@ -64,7 +68,6 @@ def write_reports(
     }
     comparison_text = json.dumps(comparison, ensure_ascii=False, indent=2) + "\n"
 
-    import io
     stream = io.StringIO(newline="")
     writer = csv.DictWriter(stream, fieldnames=CSV_FIELDS, extrasaction="ignore")
     writer.writeheader()
@@ -82,7 +85,7 @@ def write_reports(
             "review_reasons": json.dumps(assessment["review_reasons"], ensure_ascii=False),
             "policy_questions": json.dumps(assessment["policy_questions"], ensure_ascii=False),
         }
-        writer.writerow({key: _display(value) for key, value in row.items()})
+        writer.writerow(cast(Any, {key: _display(value) for key, value in row.items()}))
     csv_text = stream.getvalue()
     markdown_rows = []
     for commitment in commitments:
@@ -122,7 +125,7 @@ def write_reports(
     write_run_notes(run_dir, metadata, scope, assessments)
 
 
-def write_run_notes(run_dir: Path, metadata: dict, scope: dict, assessments: list[dict], failure: dict | None = None) -> None:
+def write_run_notes(run_dir: Path, metadata: JsonDict, scope: JsonDict, assessments: list[JsonDict], failure: JsonDict | None = None) -> None:
     unresolved = [question for item in assessments for question in item.get("policy_questions", [])]
     lines = [
         "# Ghi chú lần chạy", "",

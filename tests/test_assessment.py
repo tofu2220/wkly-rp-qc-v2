@@ -10,7 +10,6 @@ from wkly_rp_qc_v2.assessment import (
     validate_extraction,
 )
 
-
 SOURCES = {
     "P1": {"source_id": "P1", "week": "previous", "field": "next_plan", "text": "Hoàn thành API\nkiểm thử tích hợp"},
     "C1": {"source_id": "C1", "week": "current", "field": "actual", "text": "Đã bàn giao API"},

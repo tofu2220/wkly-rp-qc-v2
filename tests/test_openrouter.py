@@ -1,11 +1,10 @@
 import io
 import json
 import unittest
-from urllib.error import HTTPError, URLError
 from unittest.mock import patch
+from urllib.error import HTTPError
 
 from wkly_rp_qc_v2.openrouter import OpenRouterError, complete_json
-
 
 API_KEY = "unit-test-credential"
 
@@ -60,9 +59,11 @@ class OpenRouterTests(unittest.TestCase):
                 self.assertNotIn(API_KEY, json.dumps(caught.exception.raw_response))
 
     def test_network_timeout_is_actionable(self):
-        with patch("wkly_rp_qc_v2.openrouter.urllib.request.urlopen", side_effect=TimeoutError("timed out")):
-            with self.assertRaisesRegex(OpenRouterError, "timed out"):
-                complete_json([], {}, api_key=API_KEY, model="test")
+        with (
+            patch("wkly_rp_qc_v2.openrouter.urllib.request.urlopen", side_effect=TimeoutError("timed out")),
+            self.assertRaisesRegex(OpenRouterError, "timed out"),
+        ):
+            complete_json([], {}, api_key=API_KEY, model="test")
 
     def test_refusal_missing_content_and_missing_choices_fail_with_diagnostics(self):
         cases = [
@@ -71,9 +72,12 @@ class OpenRouterTests(unittest.TestCase):
             ({"choices": [], "usage": {}}, "choices"),
         ]
         for body, message in cases:
-            with patch("wkly_rp_qc_v2.openrouter.urllib.request.urlopen", return_value=response(body)):
-                with self.subTest(message=message), self.assertRaisesRegex(OpenRouterError, message):
-                    complete_json([], {}, api_key=API_KEY, model="test")
+            with (
+                patch("wkly_rp_qc_v2.openrouter.urllib.request.urlopen", return_value=response(body)),
+                self.subTest(message=message),
+                self.assertRaisesRegex(OpenRouterError, message),
+            ):
+                complete_json([], {}, api_key=API_KEY, model="test")
 
     def test_truncation_and_invalid_json_keep_raw_response_and_usage(self):
         for body, message in ((chat('{"partial":', finish_reason="length"), "truncated"), (chat("not json"), "valid JSON")):

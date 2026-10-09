@@ -1,16 +1,17 @@
 import json
 import re
 from pathlib import Path
-
+from typing import Any
 
 NARRATIVE_FIELDS = ("actual", "issue_risk", "next_plan")
 PERIOD_RE = re.compile(r"(\d{1,2})[./-](\d{1,2})\s*[-–]\s*(\d{1,2})[./-](\d{1,2})")
+JsonDict = dict[str, Any]
 
 
-def load_rows(path: Path) -> list[dict]:
+def load_rows(path: Path) -> list[JsonDict]:
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict) or not isinstance(data.get("rows"), list):
-        raise ValueError("Input must be an object containing a rows list")
+        raise ValueError("Input must be an object containing a rows list")  # noqa: TRY004 — malformed input is a CLI validation error
     rows = data["rows"]
     if any(not isinstance(row, dict) for row in rows):
         raise ValueError("Every normalized row must be an object")
@@ -27,7 +28,7 @@ def _period(value: str) -> tuple[tuple[int, int], tuple[int, int]] | None:
     return (start_month, start_day), (end_month, end_day)
 
 
-def _resolve_sheet(rows: list[dict], requested: str) -> str:
+def _resolve_sheet(rows: list[JsonDict], requested: str) -> str:
     names = list(dict.fromkeys(row["sheet"] for row in rows))
     if requested in names:
         return requested
@@ -40,8 +41,8 @@ def _resolve_sheet(rows: list[dict], requested: str) -> str:
 
 
 def select_scope(
-    rows: list[dict], previous: str, current: str, project: str, role: str, aliases: list[str]
-) -> dict:
+    rows: list[JsonDict], previous: str, current: str, project: str, role: str, aliases: list[str]
+) -> JsonDict:
     seen = set()
     sheets = set()
     for row in rows:
@@ -49,7 +50,7 @@ def select_scope(
             if key not in row:
                 raise ValueError(f"Normalized row missing required field: {key}")
         if not isinstance(row["sheet"], str) or not isinstance(row["source_row"], int):
-            raise ValueError("Sheet and source_row must be string and integer")
+            raise ValueError("Sheet and source_row must be string and integer")  # noqa: TRY004 — malformed input is a CLI validation error
         identity = (row["sheet"], row["source_row"])
         if identity in seen:
             raise ValueError(f"Duplicate sheet/row identity: {identity}")
@@ -57,11 +58,11 @@ def select_scope(
         sheets.add(row["sheet"])
         refs = row["source_refs"]
         if not isinstance(refs, dict):
-            raise ValueError(f"Invalid source references for {identity}")
+            raise ValueError(f"Invalid source references for {identity}")  # noqa: TRY004 — malformed input is a CLI validation error
         for field in NARRATIVE_FIELDS:
-            if not isinstance(row[field], str):
+            if row[field] is not None and not isinstance(row[field], str):
                 raise ValueError(f"Narrative field {field} must be text for {identity}")
-            if row[field].strip() and (not isinstance(refs.get(field), str) or not refs[field]):
+            if isinstance(row[field], str) and row[field].strip() and (not isinstance(refs.get(field), str) or not refs[field]):
                 raise ValueError(f"Missing source reference for {field} in {identity}")
 
     if not rows:
@@ -74,7 +75,7 @@ def select_scope(
     previous_rows = [
         row for row in rows
         if row["sheet"] == previous_sheet and row["project"] in projects
-        and row["role"] == role and row["next_plan"].strip()
+        and row["role"] == role and isinstance(row["next_plan"], str) and row["next_plan"].strip()
     ]
     current_rows = [row for row in rows if row["sheet"] == current_sheet and row["project"] in projects]
     if not previous_rows:
@@ -106,7 +107,7 @@ def select_scope(
     }
 
 
-def build_sources(scope: dict) -> dict[str, dict]:
+def build_sources(scope: JsonDict) -> dict[str, JsonDict]:
     records = []
     for row in scope["previous_rows"]:
         records.append((row, "next_plan", "previous"))
@@ -116,7 +117,7 @@ def build_sources(scope: dict) -> dict[str, dict]:
     sources = {}
     for row, field, week in records:
         text = row[field]
-        if not text.strip():
+        if not isinstance(text, str) or not text.strip():
             continue
         index = len(sources) + 1
         source_id = f"S{index:03d}"
@@ -135,7 +136,7 @@ def build_sources(scope: dict) -> dict[str, dict]:
     return sources
 
 
-def period_context(scope: dict) -> dict:
+def period_context(scope: JsonDict) -> JsonDict:
     previous = _period(scope["previous_sheet"])
     current = _period(scope["current_sheet"])
     years = {
@@ -156,7 +157,7 @@ def period_context(scope: dict) -> dict:
     }
 
 
-def checkpoint_relation(date_text: str, context: dict) -> str:
+def checkpoint_relation(date_text: str, context: JsonDict) -> str:
     match = re.fullmatch(r"\s*(\d{1,2})\s*[/.-]\s*(\d{1,2})\s*", date_text)
     period_end = context.get("period_end")
     if not match or not period_end or context.get("warnings"):

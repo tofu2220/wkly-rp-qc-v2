@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from wkly_rp_qc_v2.assessment import assessment_schema, extraction_schema
+from wkly_rp_qc_v2.assessment import extraction_schema
 from wkly_rp_qc_v2.cli import main
 from wkly_rp_qc_v2.evidence import build_sources, select_scope
 from wkly_rp_qc_v2.openrouter import OpenRouterError
@@ -123,7 +123,7 @@ class CliTests(unittest.TestCase):
                 sources = build_sources(scope)
                 prior_id = next(key for key, item in sources.items() if item["week"] == "previous")
                 extracted = {"commitments": [{"plan_id": "P001", "planned_commitment": "Ship API", "plan_evidence": [{"source_id": prior_id, "quote": "invented" if invented else "Ship API"}], "parent_plan_id": None, "planned_stage": None, "task_owner": None, "planned_deadline_text": None}]}
-                def call(messages, schema, **kwargs):
+                def call(messages, schema, *, extracted=extracted, fail_second=fail_second, **kwargs):
                     if schema == extraction_schema():
                         return {"payload": extracted, "raw_response": {"stage": "extract"}, "usage": {}}
                     if fail_second:

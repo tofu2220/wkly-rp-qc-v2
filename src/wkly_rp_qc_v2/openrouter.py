@@ -1,9 +1,10 @@
 import json
 import urllib.error
 import urllib.request
-
+from typing import Any
 
 ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
+JsonDict = dict[str, Any]
 
 
 def _redact(value: object, credential: str) -> object:
@@ -17,7 +18,7 @@ def _redact(value: object, credential: str) -> object:
 
 
 class OpenRouterError(RuntimeError):
-    def __init__(self, message: str, *, raw_response: object = None, usage: dict | None = None, api_key: str = ""):
+    def __init__(self, message: str, *, raw_response: object = None, usage: JsonDict | None = None, api_key: str = ""):
         super().__init__(message.replace(api_key, "[REDACTED]") if api_key else message)
         self.raw_response = _redact(raw_response, api_key) if api_key else raw_response
         self.usage = usage or {}
@@ -31,7 +32,7 @@ def _decode_response(data: bytes, api_key: str) -> object:
         return _redact(text, api_key)
 
 
-def complete_json(messages: list[dict], schema: dict, *, api_key: str, model: str) -> dict:
+def complete_json(messages: list[JsonDict], schema: JsonDict, *, api_key: str, model: str) -> JsonDict:
     body = json.dumps({
         "model": model,
         "messages": messages,
