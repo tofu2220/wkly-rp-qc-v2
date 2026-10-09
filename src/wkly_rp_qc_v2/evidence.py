@@ -109,12 +109,12 @@ def select_scope(
 def build_sources(scope: dict) -> dict[str, dict]:
     records = []
     for row in scope["previous_rows"]:
-        records.append((row, "next_plan"))
+        records.append((row, "next_plan", "previous"))
     for row in scope["current_rows"]:
-        records.extend((row, field) for field in NARRATIVE_FIELDS)
+        records.extend((row, field, "current") for field in NARRATIVE_FIELDS)
     records.sort(key=lambda item: (item[0]["sheet"], item[0]["source_row"], item[1]))
     sources = {}
-    for row, field in records:
+    for row, field, week in records:
         text = row[field]
         if not text.strip():
             continue
@@ -128,6 +128,7 @@ def build_sources(scope: dict) -> dict[str, dict]:
             "role": row["role"],
             "pic": row["pic"],
             "field": field,
+            "week": week,
             "cell": row["source_refs"][field],
             "text": text,
         }
