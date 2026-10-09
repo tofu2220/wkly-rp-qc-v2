@@ -86,6 +86,7 @@ def assessment_messages(commitments: list[JsonDict], scope: JsonDict, sources: J
         "thresholds to approved policy. Match confidence, source-reported status, and reporting clarity are independent. "
         "Search Actual, Issue/Risk, and Next Plan across every selected current project role; a Next Plan is not proof of completion. "
         "Do not infer handover from cross-role resemblance or borrow another commitment's status, blocker or reason. "
+        "Never invent or assert completion, status, dates, delay reasons, or handovers absent from source text; use null when status is unreported and cite exact source text for every assessment claim. "
         "An explained delay is not by itself a Milestone Conflict; compare like stages and dates. A completed handoff can be a valid "
         "update, while an internal QC bug must not be invented. An elapsed checkpoint copied unchanged is not a current checkpoint; "
         "use historical period context, never today's date. Preserve exact evidence quotes. Missing Closure cites prior plan evidence; "

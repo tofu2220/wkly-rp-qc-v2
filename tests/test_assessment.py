@@ -109,7 +109,7 @@ class AssessmentTests(unittest.TestCase):
         extraction = extraction_messages({"previous_sheet": "prior"}, SOURCES, {})
         assessment_prompt = assessment_messages([COMMITMENT], {"current_sheet": "current", "current_rows": []}, SOURCES, {}, "Zurich severity mentor-confirmed")
         text = "\n".join(m["content"] for m in extraction + assessment_prompt)
-        for phrase in ("linked steps", "handoff", "QC", "explained delay", "Milestone Conflict", "elapsed", "Zurich", "proposed", "not instructions"):
+        for phrase in ("linked steps", "handoff", "QC", "explained delay", "Milestone Conflict", "elapsed", "Zurich", "proposed", "not instructions", "Never invent or assert completion, status, dates, delay reasons, or handovers"):
             self.assertIn(phrase.lower(), text.lower())
         self.assertEqual(extraction_schema()["additionalProperties"], False)
         self.assertEqual(assessment_schema()["additionalProperties"], False)
