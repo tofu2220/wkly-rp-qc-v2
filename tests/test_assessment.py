@@ -6,6 +6,7 @@ from wkly_rp_qc_v2.assessment import (
     assessment_schema,
     extraction_messages,
     extraction_schema,
+    restore_assessment_quotes,
     validate_assessment,
     validate_extraction,
 )
@@ -35,6 +36,164 @@ def assessment(commitment=None):
 
 
 class AssessmentTests(unittest.TestCase):
+    def _assessment_payload(self, *, update_quote, finding_quotes=()):
+        result = assessment()
+        result["update_evidence"] = [{"source_id": "C1", "quote": update_quote}]
+        result["findings"] = [
+            {
+                "rule": "Closure Incomplete",
+                "severity": "Suggestion",
+                "severity_status": "proposed",
+                "explanation": "The report lacks a usable checkpoint.",
+                "evidence": [{"source_id": "C1", "quote": quote}],
+                "question_for_PM": "What is the next checkpoint?",
+            }
+            for quote in finding_quotes
+        ]
+        result["requires_review"] = bool(result["findings"])
+        return {"assessments": [result]}
+
+    def test_restoration_repairs_unique_whitespace_only_citations_without_mutating_inputs(self):
+        sources = copy.deepcopy(SOURCES)
+        sources["C1"]["text"] = "7.  Kế hoạch pilot Zurich tháng 11"
+        bad_quote = "7. Kế hoạch pilot Zurich tháng 11"
+        payload = self._assessment_payload(update_quote=bad_quote, finding_quotes=(bad_quote, bad_quote))
+        before_payload, before_sources = copy.deepcopy(payload), copy.deepcopy(sources)
+
+        restored, repairs = restore_assessment_quotes(payload, sources)
+
+        self.assertEqual(payload, before_payload)
+        self.assertEqual(sources, before_sources)
+        self.assertEqual(len(repairs), 3)
+        self.assertEqual(
+            [record["citation_path"] for record in repairs],
+            [
+                "assessments[0].update_evidence[0]",
+                "assessments[0].findings[0].evidence[0]",
+                "assessments[0].findings[1].evidence[0]",
+            ],
+        )
+        for repair in repairs:
+            self.assertEqual(repair["source_id"], "C1")
+            self.assertEqual(repair["original_quote"], bad_quote)
+            self.assertEqual(repair["restored_quote"], sources["C1"]["text"])
+            self.assertEqual(
+                sources["C1"]["text"][repair["source_start"]:repair["source_end"]],
+                repair["restored_quote"],
+            )
+        self.assertEqual(len(validate_assessment(restored, [COMMITMENT], sources)), 1)
+        self.assertEqual(restore_assessment_quotes(restored, sources)[1], [])
+
+    def test_restoration_leaves_exact_quotes_unchanged_even_when_repeated(self):
+        sources = copy.deepcopy(SOURCES)
+        sources["C1"]["text"] = "Đã bàn giao API; sau đó Đã bàn giao API"
+        quote = "Đã bàn giao API"
+        payload = self._assessment_payload(update_quote=quote)
+
+        restored, repairs = restore_assessment_quotes(payload, sources)
+
+        self.assertEqual(restored, payload)
+        self.assertEqual(repairs, [])
+        self.assertEqual(validate_assessment(restored, [COMMITMENT], sources)[0]["plan_id"], "P001")
+
+    def test_restoration_rejects_ambiguous_and_overlapping_spans(self):
+        cases = (
+            ("7. Pilot", "7.  Pilot; 7.   Pilot"),
+            ("A A", "A  A  A"),
+        )
+        for quote, source_text in cases:
+            with self.subTest(quote=quote, source_text=source_text):
+                sources = copy.deepcopy(SOURCES)
+                sources["C1"]["text"] = source_text
+                payload = self._assessment_payload(update_quote=quote)
+
+                restored, repairs = restore_assessment_quotes(payload, sources)
+
+                self.assertEqual(restored, payload)
+                self.assertEqual(repairs, [])
+                with self.assertRaises(ValueError):
+                    validate_assessment(restored, [COMMITMENT], sources)
+
+    def test_restoration_rejects_non_horizontal_changes(self):
+        cases = (
+            ("release 10/09", "release  11/09"),
+            ("Đã bàn giao", "Đang  bàn giao"),
+            ("UAT: 70%", "UAT -  70%"),
+            ("Pilot Zurich", "pilot  Zurich"),
+            ("cà phê", "cà  phê"),
+            ("Pilot tháng", "Pilot\ntháng"),
+            ("Pilot\ntháng", "Pilot\r\ntháng"),
+            ("AB", "A B"),
+            ("A B", "AB"),
+        )
+        for quote, source_text in cases:
+            with self.subTest(quote=quote, source_text=source_text):
+                sources = copy.deepcopy(SOURCES)
+                sources["C1"]["text"] = source_text
+                payload = self._assessment_payload(update_quote=quote)
+
+                restored, repairs = restore_assessment_quotes(payload, sources)
+
+                self.assertEqual(restored, payload)
+                self.assertEqual(repairs, [])
+                with self.assertRaises(ValueError):
+                    validate_assessment(restored, [COMMITMENT], sources)
+
+    def test_restoration_preserves_invalid_citations_for_strict_validation(self):
+        bad_citations = (
+            {"source_id": "UNKNOWN", "quote": "Đã bàn giao API"},
+            {"source_id": "P1", "quote": "Hoàn thành API"},
+            {"source_id": "C1", "quote": ""},
+            {"source_id": "C1", "quote": 7},
+            {"source_id": "C1", "quote": "Đã bàn giao API", "extra": True},
+            {"source_id": "C1"},
+            {"source_id": [], "quote": "Đã bàn giao API"},
+        )
+        for citation in bad_citations:
+            with self.subTest(citation=citation):
+                payload = self._assessment_payload(update_quote="Đã bàn giao API")
+                payload["assessments"][0]["update_evidence"] = [copy.deepcopy(citation)]
+                restored, repairs = restore_assessment_quotes(payload, SOURCES)
+                self.assertEqual(restored, payload)
+                self.assertEqual(repairs, [])
+                with self.assertRaises((ValueError, TypeError)):
+                    validate_assessment(restored, [COMMITMENT], SOURCES)
+
+        for malformed in ("not-an-array", None):
+            with self.subTest(malformed=malformed):
+                payload = self._assessment_payload(update_quote="Đã bàn giao API")
+                payload["assessments"][0]["update_evidence"] = malformed
+                restored, repairs = restore_assessment_quotes(payload, SOURCES)
+                self.assertEqual(restored, payload)
+                self.assertEqual(repairs, [])
+                with self.assertRaises((ValueError, TypeError)):
+                    validate_assessment(restored, [COMMITMENT], SOURCES)
+
+        malformed_payload = {"assessments": [{"plan_id": "P001", "update_evidence": "bad"}]}
+        restored, repairs = restore_assessment_quotes(malformed_payload, SOURCES)
+        self.assertEqual(restored, malformed_payload)
+        self.assertEqual(repairs, [])
+        with self.assertRaises((ValueError, TypeError, KeyError)):
+            validate_assessment(restored, [COMMITMENT], SOURCES)
+
+    def test_restoration_accepts_tabs_and_prior_plan_finding_context_only(self):
+        sources = copy.deepcopy(SOURCES)
+        sources["C1"]["text"] = "A\t\tB"
+        sources["P1"]["text"] = "Plan A  B"
+        payload = self._assessment_payload(update_quote="A B", finding_quotes=("Plan A B",))
+        payload["assessments"][0]["findings"][0]["evidence"][0]["source_id"] = "P1"
+        payload["assessments"][0]["findings"][0]["evidence"].append(
+            {"source_id": "C1", "quote": "A B"}
+        )
+
+        restored, repairs = restore_assessment_quotes(payload, sources)
+
+        self.assertEqual(len(repairs), 3)
+        self.assertEqual(repairs[0]["restored_quote"], "A\t\tB")
+        self.assertEqual(repairs[1]["restored_quote"], "Plan A  B")
+        self.assertEqual(repairs[2]["citation_path"], "assessments[0].findings[0].evidence[1]")
+        self.assertEqual(validate_assessment(restored, [COMMITMENT], sources)[0]["plan_id"], "P001")
+
     def test_accepts_exact_multiline_vietnamese_quote_and_cross_role_uncertainty(self):
         commitment = copy.deepcopy(COMMITMENT)
         commitment["plan_evidence"][0]["quote"] = "Hoàn thành API\nkiểm thử"

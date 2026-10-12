@@ -127,15 +127,17 @@ def write_reports(
 
 def write_run_notes(run_dir: Path, metadata: JsonDict, scope: JsonDict, assessments: list[JsonDict], failure: JsonDict | None = None) -> None:
     unresolved = [question for item in assessments for question in item.get("policy_questions", [])]
+    offline_replay = metadata.get("verification_mode") == "offline_replay"
+    citation_repairs = metadata.get("citation_repairs", [])
     lines = [
         "# Ghi chú lần chạy", "",
         f"- Trạng thái: {'THẤT BẠI' if failure else 'Hoàn tất kiểm tra cấu trúc'}",
         f"- Thời điểm UTC: {metadata.get('created_at_utc', 'không có')}",
-        f"- Model: {metadata.get('model', 'không gọi')}",
+        f"- Model: {'không gọi (replay offline)' if offline_replay else metadata.get('model', 'không gọi')}",
         f"- Phạm vi: {scope.get('previous_sheet', 'chưa xác định')} → {scope.get('current_sheet', 'chưa xác định')}",
         f"- SHA-256 input: {metadata.get('input_sha256', 'không có')}",
         f"- SHA-256 rules: {metadata.get('rules_sha256', 'không có')}",
-        f"- Token usage: {json.dumps(metadata.get('usage', {}), ensure_ascii=False)}",
+        f"- Token usage: {'không phát sinh (replay offline)' if offline_replay else json.dumps(metadata.get('usage', {}), ensure_ascii=False)}",
         f"- Bất định kỳ báo cáo: {json.dumps(metadata.get('period_context', {}), ensure_ascii=False)}",
         "",
         "## Cảnh báo và chính sách chưa chốt",
@@ -143,6 +145,24 @@ def write_run_notes(run_dir: Path, metadata: JsonDict, scope: JsonDict, assessme
         *[f"- Câu hỏi chính sách: {question}" for question in unresolved],
         "- Kiểm tra cấu trúc/trích dẫn không chứng minh tính đầy đủ ngữ nghĩa hoặc việc hoàn thành thực tế.",
     ]
+    if offline_replay:
+        lines.extend([
+            "", "## Chế độ kiểm chứng",
+            "- Kiểm chứng: replay offline, không gọi API",
+            f"- Nguồn replay: {metadata.get('replayed_from', 'không xác định')}",
+        ])
+    lines.extend(["", "## Khôi phục trích dẫn từ nguồn", f"- Số trích dẫn được khôi phục: {len(citation_repairs)}"])
+    for repair in citation_repairs:
+        lines.append(
+            "- " + json.dumps({
+                "citation_path": repair.get("citation_path"),
+                "source_id": repair.get("source_id"),
+                "source_start": repair.get("source_start"),
+                "source_end": repair.get("source_end"),
+                "original_quote": repair.get("original_quote"),
+                "restored_quote": repair.get("restored_quote"),
+            }, ensure_ascii=False)
+        )
     if failure:
         lines.extend(["", "## Chẩn đoán lỗi", f"- Giai đoạn: {failure.get('stage', 'unknown')}", f"- Lỗi: {failure.get('error', 'unknown')}"])
     (run_dir / "run_notes.md").write_text("\n".join(lines) + "\n", encoding="utf-8")

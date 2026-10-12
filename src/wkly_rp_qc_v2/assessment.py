@@ -1,4 +1,6 @@
+import copy
 import json
+import re
 from typing import Any
 
 JsonDict = dict[str, Any]
@@ -140,6 +142,74 @@ def _evidence(items: object, sources: JsonDict, where: str, allowed_weeks: set[s
         if item["quote"] not in source.get("text", ""):
             raise ValueError(f"Quote is not an exact source substring in {where}: {item['source_id']}")
     return items
+
+
+def restore_assessment_quotes(payload: JsonDict, sources: JsonDict) -> tuple[JsonDict, list[JsonDict]]:
+    restored = copy.deepcopy(payload)
+    repairs = []
+
+    def restore(items: object, path: str, allowed_weeks: set[str]) -> None:
+        if not isinstance(items, list):
+            return
+        for index, item in enumerate(items):
+            if not isinstance(item, dict) or set(item) != {"source_id", "quote"}:
+                continue
+            source_id = item["source_id"]
+            quote = item["quote"]
+            if not isinstance(source_id, str):
+                continue
+            source = sources.get(source_id)
+            if (
+                not isinstance(quote, str)
+                or not quote
+                or not isinstance(source, dict)
+                or source.get("week") not in allowed_weeks
+                or not isinstance(source.get("text"), str)
+            ):
+                continue
+            source_text = source["text"]
+            if quote in source_text:
+                continue
+
+            pattern = "".join(
+                r"[ \t]+" if re.fullmatch(r"[ \t]+", part) else re.escape(part)
+                for part in re.split(r"([ \t]+)", quote)
+            )
+            matches = list(re.finditer(r"(?=(" + pattern + r"))", source_text))
+            if len(matches) != 1:
+                continue
+
+            match = matches[0]
+            start, end = match.span(1)
+            exact_quote = source_text[start:end]
+            item["quote"] = exact_quote
+            repairs.append({
+                "citation_path": f"{path}[{index}]",
+                "source_id": source_id,
+                "original_quote": quote,
+                "restored_quote": exact_quote,
+                "source_start": start,
+                "source_end": end,
+            })
+
+    assessments = restored.get("assessments")
+    if not isinstance(assessments, list):
+        return restored, repairs
+    for assessment_index, item in enumerate(assessments):
+        if not isinstance(item, dict):
+            continue
+        restore(item.get("update_evidence"), f"assessments[{assessment_index}].update_evidence", {"current"})
+        findings = item.get("findings")
+        if not isinstance(findings, list):
+            continue
+        for finding_index, finding in enumerate(findings):
+            if isinstance(finding, dict):
+                restore(
+                    finding.get("evidence"),
+                    f"assessments[{assessment_index}].findings[{finding_index}].evidence",
+                    {"previous", "current"},
+                )
+    return restored, repairs
 
 
 def validate_extraction(payload: JsonDict, sources: JsonDict) -> list[JsonDict]:

@@ -14,6 +14,7 @@ from .assessment import (
     assessment_schema,
     extraction_messages,
     extraction_schema,
+    restore_assessment_quotes,
     validate_assessment,
     validate_extraction,
 )
@@ -141,7 +142,9 @@ def main(argv: list[str] | None = None) -> int:
         _response_file(run_dir, "assessment", assessment)
         metadata["usage"]["assessment"] = assessment.get("usage", {})
         stage = "assessment validation"
-        assessments = validate_assessment(assessment["payload"], commitments, sources)
+        assessment_payload, citation_repairs = restore_assessment_quotes(assessment["payload"], sources)
+        metadata["citation_repairs"] = citation_repairs
+        assessments = validate_assessment(assessment_payload, commitments, sources)
         metadata["policy_questions"] = [question for item in assessments for question in item["policy_questions"]]
         stage = "report writing"
         write_reports(run_dir, scope, sources, commitments, assessments, metadata)

@@ -11,7 +11,7 @@ from wkly_rp_qc_v2.assessment import extraction_schema
 from wkly_rp_qc_v2.cli import main
 from wkly_rp_qc_v2.evidence import build_sources, select_scope
 from wkly_rp_qc_v2.openrouter import OpenRouterError
-from wkly_rp_qc_v2.report import write_reports
+from wkly_rp_qc_v2.report import write_reports, write_run_notes
 
 
 def row(sheet, source_row, role="PTSP", plan="Ship API"):
@@ -37,6 +37,35 @@ def run_args(root, input_path, rules_path, output=None):
     return ["compare", "--input", str(input_path), "--rules", str(rules_path),
             "--previous", "BC Tuần 01.09 - 05.09", "--current", "BC Tuần 07.09 - 12.09",
             "--project", "SMART PARKING", "--role", "PTSP", "--output", str(output or root / "results")]
+
+
+def quote_repair_responses(input_path, *, update_quote, finding_quotes=(), update_previous=False):
+    rows = json.loads(input_path.read_text(encoding="utf-8"))["rows"]
+    scope = select_scope(rows, "BC Tuần 01.09 - 05.09", "BC Tuần 07.09 - 12.09", "SMART PARKING", "PTSP", [])
+    sources = build_sources(scope)
+    previous_id = next(key for key, source in sources.items() if source["week"] == "previous")
+    current_id = next(key for key, source in sources.items() if source["week"] == "current" and source["field"] == "actual")
+    extracted = {"commitments": [{
+        "plan_id": "P001", "planned_commitment": "Ship API",
+        "plan_evidence": [{"source_id": previous_id, "quote": "Ship API"}], "parent_plan_id": None,
+        "planned_stage": None, "task_owner": None, "planned_deadline_text": None,
+    }]}
+    finding_records = [{
+        "rule": "Closure Incomplete", "severity": "Suggestion", "severity_status": "proposed",
+        "explanation": "A checkpoint is not specified.",
+        "evidence": [{"source_id": current_id, "quote": quote}],
+        "question_for_PM": "What is the next checkpoint?",
+    } for quote in finding_quotes]
+    assessed = {"assessments": [{
+        "plan_id": "P001", "source_reported_status": "In progress", "match_confidence": "Confirmed",
+        "match_explanation": "The selected evidence names the same deliverable.",
+        "reporting_clarity": "Incomplete",
+        "update_evidence": [{"source_id": previous_id if update_previous else current_id, "quote": update_quote}],
+        "findings": finding_records, "requires_review": bool(finding_records),
+        "review_reasons": [], "policy_questions": [],
+    }]}
+    raw = {"choices": [{"message": {"content": json.dumps(assessed, ensure_ascii=False)}}]}
+    return extracted, assessed, raw, sources, current_id
 
 
 class CliTests(unittest.TestCase):
@@ -181,6 +210,127 @@ class CliTests(unittest.TestCase):
             self.assertEqual(json.loads((run_dir / "assessment_response.json").read_text(encoding="utf-8"))["raw_response"], {"stage": "assess"})
             for name in ("mentor_review.md", "comparison.json", "comparison.csv"):
                 self.assertFalse((run_dir / name).exists())
+
+    def test_quote_restoration_writes_canonical_reports_and_audit(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            previous = row("BC Tuần 01.09 - 05.09", 7)
+            current = row("BC Tuần 07.09 - 12.09", 7)
+            current["actual"] = "7.  Kế hoạch pilot Zurich tháng 11"
+            input_path, rules_path = fixture_files(root, [previous, current])
+            bad_quote = "7. Kế hoạch pilot Zurich tháng 11"
+            extracted, assessed, raw_assessment, _, _ = quote_repair_responses(
+                input_path, update_quote=bad_quote, finding_quotes=(bad_quote, bad_quote)
+            )
+            results = iter((
+                {"payload": extracted, "raw_response": {"choices": [{"message": {"content": json.dumps(extracted)}}]}, "usage": {}},
+                {"payload": assessed, "raw_response": raw_assessment, "usage": {}},
+            ))
+            output, error_output = io.StringIO(), io.StringIO()
+            with patch("os.getcwd", return_value=str(root)), \
+                 patch.dict(os.environ, {"OPENROUTER_API_KEY": "dummy-token"}, clear=True), \
+                 patch("wkly_rp_qc_v2.cli.complete_json", side_effect=lambda *args, **kwargs: next(results)) as client, \
+                 patch("sys.stdout", output), patch("sys.stderr", error_output):
+                self.assertEqual(main(run_args(root, input_path, rules_path)), 0)
+
+            self.assertEqual(client.call_count, 2)
+            run_dir = Path(output.getvalue().strip().splitlines()[-1].split(": ", 1)[1])
+            comparison = json.loads((run_dir / "comparison.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(comparison["metadata"]["citation_repairs"]), 3)
+            self.assertEqual(
+                [item["quote"] for item in comparison["assessments"][0]["update_evidence"]],
+                [current["actual"]],
+            )
+            self.assertIn(current["actual"], (run_dir / "comparison.csv").read_text(encoding="utf-8-sig"))
+            self.assertIn(current["actual"], (run_dir / "mentor_review.md").read_text(encoding="utf-8"))
+            notes = (run_dir / "run_notes.md").read_text(encoding="utf-8")
+            self.assertIn("## Khôi phục trích dẫn từ nguồn", notes)
+            self.assertIn(json.dumps(bad_quote, ensure_ascii=False), notes)
+            self.assertIn(json.dumps(current["actual"], ensure_ascii=False), notes)
+            saved_raw = json.loads((run_dir / "assessment_response.json").read_text(encoding="utf-8"))
+            self.assertEqual(json.loads(saved_raw["raw_response"]["choices"][0]["message"]["content"]), assessed)
+            self.assertEqual(assessed["assessments"][0]["update_evidence"][0]["quote"], bad_quote)
+            self.assertEqual(error_output.getvalue(), "")
+
+    def test_quote_restoration_failures_keep_diagnostics(self):
+        cases = (
+            ("changed-date", "Release 11/09", "Release 10/09", False),
+            ("ambiguous-span", "Pilot  Zurich; Pilot   Zurich", "Pilot Zurich", False),
+            ("wrong-week", "Current report", "Ship API", True),
+        )
+        for name, actual_text, quote, previous_source in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                previous = row("BC Tuần 01.09 - 05.09", 7)
+                current = row("BC Tuần 07.09 - 12.09", 7)
+                current["actual"] = actual_text
+                input_path, rules_path = fixture_files(root, [previous, current])
+                extracted, assessed, raw_assessment, _, _ = quote_repair_responses(
+                    input_path, update_quote=quote, update_previous=previous_source
+                )
+                results = iter((
+                    {"payload": extracted, "raw_response": {"stage": "extract"}, "usage": {}},
+                    {"payload": assessed, "raw_response": raw_assessment, "usage": {}},
+                ))
+                output = io.StringIO()
+                with patch("os.getcwd", return_value=str(root)), \
+                     patch.dict(os.environ, {"OPENROUTER_API_KEY": "dummy-token"}, clear=True), \
+                     patch("wkly_rp_qc_v2.cli.complete_json", side_effect=results), \
+                     patch("sys.stdout", output), patch("sys.stderr", io.StringIO()):
+                    self.assertEqual(main(run_args(root, input_path, rules_path)), 1)
+                run_dir = Path(output.getvalue().strip().splitlines()[-1].split(": ", 1)[1])
+                failure = json.loads((run_dir / "failure.json").read_text(encoding="utf-8"))
+                self.assertEqual(failure["stage"], "assessment validation")
+                self.assertTrue((run_dir / "assessment_response.json").exists())
+                self.assertFalse((run_dir / "comparison.json").exists())
+                self.assertFalse((run_dir / "comparison.csv").exists())
+                self.assertFalse((run_dir / "mentor_review.md").exists())
+
+    def test_partial_quote_repairs_are_logged_when_later_validation_fails(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            previous = row("BC Tuần 01.09 - 05.09", 7)
+            current = row("BC Tuần 07.09 - 12.09", 7)
+            current["actual"] = "A  B plus C"
+            input_path, rules_path = fixture_files(root, [previous, current])
+            extracted, assessed, _, _, current_id = quote_repair_responses(input_path, update_quote="A B")
+            assessed["assessments"][0]["update_evidence"].append({"source_id": current_id, "quote": "C D"})
+            raw_assessment = {"choices": [{"message": {"content": json.dumps(assessed, ensure_ascii=False)}}]}
+            results = iter((
+                {"payload": extracted, "raw_response": {"stage": "extract"}, "usage": {}},
+                {"payload": assessed, "raw_response": raw_assessment, "usage": {}},
+            ))
+            output = io.StringIO()
+            with patch("os.getcwd", return_value=str(root)), \
+                 patch.dict(os.environ, {"OPENROUTER_API_KEY": "dummy-token"}, clear=True), \
+                 patch("wkly_rp_qc_v2.cli.complete_json", side_effect=lambda *args, **kwargs: next(results)), \
+                 patch("sys.stdout", output), patch("sys.stderr", io.StringIO()):
+                self.assertEqual(main(run_args(root, input_path, rules_path)), 1)
+            run_dir = Path(output.getvalue().strip().splitlines()[-1].split(": ", 1)[1])
+            notes = (run_dir / "run_notes.md").read_text(encoding="utf-8")
+            self.assertIn("Số trích dẫn được khôi phục: 1", notes)
+            self.assertIn(json.dumps("A B", ensure_ascii=False), notes)
+            self.assertIn(json.dumps("A  B", ensure_ascii=False), notes)
+            saved_raw = json.loads((run_dir / "assessment_response.json").read_text(encoding="utf-8"))
+            self.assertEqual(json.loads(saved_raw["raw_response"]["choices"][0]["message"]["content"]), assessed)
+            self.assertFalse((run_dir / "comparison.json").exists())
+
+    def test_run_notes_labels_offline_replay(self):
+        with tempfile.TemporaryDirectory() as temp:
+            run_dir = Path(temp)
+            metadata = {
+                "verification_mode": "offline_replay",
+                "replayed_from": "results/smart-parking/20261012T031440747089Z",
+                "citation_repairs": [],
+                "usage": {},
+            }
+
+            write_run_notes(run_dir, metadata, {}, [])
+
+            notes = (run_dir / "run_notes.md").read_text(encoding="utf-8")
+            self.assertIn("Kiểm chứng: replay offline, không gọi API", notes)
+            self.assertIn("results/smart-parking/20261012T031440747089Z", notes)
+            self.assertNotIn("API đã được gọi", notes)
 
     def test_report_escapes_markdown_and_round_trips_multiline_vietnamese(self):
         source = {"S1": {"source_id": "S1", "week": "previous", "field": "next_plan", "sheet": "S", "source_row": 3, "cell": "E3", "text": "<b>|\nDòng hai =x"}}
