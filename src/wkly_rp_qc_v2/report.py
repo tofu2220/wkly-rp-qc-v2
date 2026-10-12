@@ -101,9 +101,10 @@ def write_reports(
             _finding_text(assessment["findings"], sources),
             f"Kế hoạch: {plan_locations}<br>Cập nhật: {update_locations}",
         )) + " |")
-    mentor = "\n".join([
-        "# Rà soát chất lượng báo cáo tuần",
-        "",
+    mentor_lines = ["# Rà soát chất lượng báo cáo tuần", ""]
+    if metadata.get("verification_mode") == "offline_replay":
+        mentor_lines.extend(["Replay offline — response lịch sử, không gọi AI mới", ""])
+    mentor_lines.extend([
         f"- Dự án: {_cell(scope['project'])} (alias: {_cell(', '.join(sorted(scope['project_aliases'])))})",
         f"- Kỳ kế hoạch: {_cell(scope['previous_sheet'])} → kỳ cập nhật: {_cell(scope['current_sheet'])}",
         f"- Số cam kết: {len(commitments)}; số cam kết có phát hiện: {affected_count}; tổng số phát hiện: {findings_count}.",
@@ -118,6 +119,7 @@ def write_reports(
         f"Đã tìm trong Actual, Issue/Risk và Next Plan của mọi vai trò ở `{_cell(scope['current_sheet'])}`.",
         "",
     ])
+    mentor = "\n".join(mentor_lines)
 
     (run_dir / "comparison.json").write_text(comparison_text, encoding="utf-8")
     (run_dir / "comparison.csv").write_text("\ufeff" + csv_text, encoding="utf-8", newline="")
@@ -129,6 +131,10 @@ def write_run_notes(run_dir: Path, metadata: JsonDict, scope: JsonDict, assessme
     unresolved = [question for item in assessments for question in item.get("policy_questions", [])]
     offline_replay = metadata.get("verification_mode") == "offline_replay"
     citation_repairs = metadata.get("citation_repairs", [])
+    rules_hash_line = (
+        f"- Historical rules SHA-256: {metadata.get('historical_rules_sha256') or 'unavailable'}"
+        if offline_replay else f"- SHA-256 rules: {metadata.get('rules_sha256', 'không có')}"
+    )
     lines = [
         "# Ghi chú lần chạy", "",
         f"- Trạng thái: {'THẤT BẠI' if failure else 'Hoàn tất kiểm tra cấu trúc'}",
@@ -136,7 +142,7 @@ def write_run_notes(run_dir: Path, metadata: JsonDict, scope: JsonDict, assessme
         f"- Model: {'không gọi (replay offline)' if offline_replay else metadata.get('model', 'không gọi')}",
         f"- Phạm vi: {scope.get('previous_sheet', 'chưa xác định')} → {scope.get('current_sheet', 'chưa xác định')}",
         f"- SHA-256 input: {metadata.get('input_sha256', 'không có')}",
-        f"- SHA-256 rules: {metadata.get('rules_sha256', 'không có')}",
+        rules_hash_line,
         f"- Token usage: {'không phát sinh (replay offline)' if offline_replay else json.dumps(metadata.get('usage', {}), ensure_ascii=False)}",
         f"- Bất định kỳ báo cáo: {json.dumps(metadata.get('period_context', {}), ensure_ascii=False)}",
         "",
@@ -148,8 +154,11 @@ def write_run_notes(run_dir: Path, metadata: JsonDict, scope: JsonDict, assessme
     if offline_replay:
         lines.extend([
             "", "## Chế độ kiểm chứng",
+            "- Replay offline — response lịch sử, không gọi AI mới",
             "- Kiểm chứng: replay offline, không gọi API",
             f"- Nguồn replay: {metadata.get('replayed_from', 'không xác định')}",
+            f"- Mức xác minh phạm vi: {metadata.get('scope_provenance', 'không xác định')}",
+            f"- SHA-256 response lịch sử: {json.dumps(metadata.get('response_sha256', {}), ensure_ascii=False)}",
         ])
     lines.extend(["", "## Khôi phục trích dẫn từ nguồn", f"- Số trích dẫn được khôi phục: {len(citation_repairs)}"])
     for repair in citation_repairs:

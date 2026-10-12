@@ -1,5 +1,6 @@
 import copy
 import csv
+import hashlib
 import io
 import json
 import os
@@ -96,7 +97,212 @@ def two_commitment_responses(input_path):
     return extraction, assessment, raw_assessment, current_id
 
 
+def replay_args(input_path, responses_dir, output_dir):
+    return [
+        "replay", "--input", str(input_path),
+        "--previous", "BC Tuần 01.09 - 05.09", "--current", "BC Tuần 07.09 - 12.09",
+        "--project", "SMART PARKING", "--role", "PTSP",
+        "--responses", str(responses_dir), "--output", str(output_dir),
+    ]
+
+
+def replay_response(payload):
+    return {"choices": [{"message": {"content": json.dumps(payload, ensure_ascii=False)}, "finish_reason": "stop"}]}
+
+
+def replay_fixture(root, *, assessment_payload=None, actual_text="alpha\nbeta"):
+    previous = row("BC Tuần 01.09 - 05.09", 7)
+    current = row("BC Tuần 07.09 - 12.09", 7)
+    current["actual"] = actual_text
+    input_path, _ = fixture_files(root, [previous, current])
+    scope = select_scope(
+        json.loads(input_path.read_text(encoding="utf-8"))["rows"],
+        "BC Tuần 01.09 - 05.09", "BC Tuần 07.09 - 12.09", "SMART PARKING", "PTSP", [],
+    )
+    sources = build_sources(scope)
+    previous_id = next(key for key, source in sources.items() if source["week"] == "previous")
+    current_id = next(key for key, source in sources.items() if source["week"] == "current" and source["field"] == "actual")
+    extraction = {"commitments": [{
+        "plan_id": "P001", "planned_commitment": "Ship API",
+        "plan_evidence": [{"source_id": previous_id, "quote": "Ship API"}], "parent_plan_id": None,
+        "planned_stage": None, "task_owner": None, "planned_deadline_text": None,
+    }]}
+    assessment = assessment_payload or {"assessments": [{
+        "plan_id": "P001", "source_reported_status": "Reported", "match_confidence": "Confirmed",
+        "match_explanation": "The selected evidence is relevant.", "reporting_clarity": "Sufficient",
+        "update_evidence": [{"source_id": current_id, "quote": "alpha"}], "findings": [],
+        "requires_review": False, "review_reasons": [], "policy_questions": [],
+    }]}
+    responses_dir = root / "historical-run"
+    responses_dir.mkdir()
+    notes = (
+        f"- SHA-256 input: {hashlib.sha256(input_path.read_bytes()).hexdigest()}\n"
+        f"- SHA-256 rules: {'a' * 64}\n"
+        "- Phạm vi: BC Tuần 01.09 - 05.09 → BC Tuần 07.09 - 12.09\n"
+    )
+    (responses_dir / "run_notes.md").write_text(notes, encoding="utf-8")
+    for name, payload in (("extraction_response.json", extraction), ("assessment_response.json", assessment)):
+        envelope = {"raw_response": replay_response(payload), "usage": {"total_tokens": 123}}
+        (responses_dir / name).write_text(json.dumps(envelope, ensure_ascii=False), encoding="utf-8")
+    return input_path, responses_dir, extraction, assessment
+
+
 class CliTests(unittest.TestCase):
+    def test_replay_runs_without_credentials_or_provider_and_labels_each_output(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            input_path, responses_dir, _, _ = replay_fixture(root)
+            (root / ".env").write_text('OPENROUTER_API_KEY="must-not-load"\n', encoding="utf-8")
+            historical_hashes = {
+                path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in responses_dir.iterdir()
+            }
+            output = io.StringIO()
+            with patch("os.getcwd", return_value=str(root)), \
+                 patch.dict(os.environ, {}, clear=True), \
+                 patch("wkly_rp_qc_v2.cli.load_dotenv") as load_env, \
+                 patch("wkly_rp_qc_v2.cli.complete_json", side_effect=AssertionError("provider called")) as provider, \
+                 patch("wkly_rp_qc_v2.openrouter.urllib.request.urlopen", side_effect=AssertionError("network called")) as network, \
+                 patch("sys.stdout", output), patch("sys.stderr", io.StringIO()):
+                self.assertEqual(main(replay_args(input_path, responses_dir, root / "offline-review")), 0)
+                self.assertEqual(main(replay_args(input_path, responses_dir, root / "offline-review")), 0)
+
+            load_env.assert_not_called()
+            provider.assert_not_called()
+            network.assert_not_called()
+            run_dirs = [
+                Path(line.split(": ", 1)[1]) for line in output.getvalue().splitlines()
+                if line.startswith("Replay directory:")
+            ]
+            self.assertEqual(len(run_dirs), 2)
+            self.assertNotEqual(run_dirs[0], run_dirs[1])
+            for run_dir in run_dirs:
+                comparison = json.loads((run_dir / "comparison.json").read_text(encoding="utf-8"))
+                metadata = comparison["metadata"]
+                self.assertEqual(metadata["verification_mode"], "offline_replay")
+                self.assertEqual(metadata["usage"], {})
+                self.assertEqual(metadata["scope_provenance"], "legacy_partial")
+                self.assertEqual(set(metadata["response_sha256"]), {
+                    "extraction_response.json", "assessment_response.json",
+                })
+                review = (run_dir / "mentor_review.md").read_text(encoding="utf-8")
+                notes = (run_dir / "run_notes.md").read_text(encoding="utf-8")
+                self.assertIn("Replay offline — response lịch sử, không gọi AI mới", review)
+                self.assertIn("Replay offline — response lịch sử, không gọi AI mới", notes)
+                self.assertIn("legacy_partial", notes)
+                self.assertIn("historical", notes.lower())
+                self.assertIn("không phát sinh", notes)
+            self.assertEqual(historical_hashes, {
+                path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in responses_dir.iterdir()
+            })
+
+    def test_replay_provenance_and_saved_decode_errors_exit_two(self):
+        for case in ("input-hash", "malformed-envelope"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                input_path, responses_dir, _, _ = replay_fixture(root)
+                if case == "input-hash":
+                    input_path.write_text(input_path.read_text(encoding="utf-8") + " ", encoding="utf-8")
+                else:
+                    (responses_dir / "assessment_response.json").write_text("not-json", encoding="utf-8")
+                output = io.StringIO()
+                with patch("os.getcwd", return_value=str(root)), \
+                     patch.dict(os.environ, {}, clear=True), \
+                     patch("wkly_rp_qc_v2.cli.complete_json", side_effect=AssertionError("provider called")), \
+                     patch("sys.stdout", output), patch("sys.stderr", io.StringIO()):
+                    self.assertEqual(main(replay_args(input_path, responses_dir, root / "offline-review")), 2)
+                run_dir = Path(next(
+                    line.split(": ", 1)[1] for line in output.getvalue().splitlines()
+                    if line.startswith(("Replay directory:", "Run directory:"))
+                ))
+                failure = json.loads((run_dir / "failure.json").read_text(encoding="utf-8"))
+                self.assertIn("replay", failure["stage"])
+                self.assertTrue((run_dir / "run_notes.md").exists())
+                for name in ("mentor_review.md", "comparison.json", "comparison.csv"):
+                    self.assertFalse((run_dir / name).exists())
+
+    def test_replay_validation_failures_keep_diagnostics_and_partial_repairs(self):
+        cases = ("extra-assessment", "review-flag", "invented-quote", "partial-repair")
+        for case in cases:
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                if case == "partial-repair":
+                    actual_text = "A  B plus C"
+                    assessment_payload = {"assessments": [{
+                        "plan_id": "P001", "source_reported_status": "Reported",
+                        "match_confidence": "Confirmed", "match_explanation": "Same item",
+                        "reporting_clarity": "Incomplete", "update_evidence": [], "findings": [],
+                        "requires_review": False, "review_reasons": [], "policy_questions": [],
+                    }]}
+                else:
+                    actual_text = "alpha\nbeta"
+                    assessment_payload = None
+                input_path, responses_dir, _, assessment = replay_fixture(
+                    root, assessment_payload=assessment_payload, actual_text=actual_text,
+                )
+                item = assessment["assessments"][0]
+                if case == "extra-assessment":
+                    extra = copy.deepcopy(item)
+                    extra["plan_id"] = "meta"
+                    assessment["assessments"].append(extra)
+                elif case == "review-flag":
+                    item["findings"] = [{
+                        "rule": "Closure Incomplete", "severity": "Suggestion", "severity_status": "proposed",
+                        "explanation": "No checkpoint.",
+                        "evidence": [{"source_id": "S002", "quote": "alpha"}],
+                        "question_for_PM": "What is the next checkpoint?",
+                    }]
+                    item["requires_review"] = False
+                elif case == "invented-quote":
+                    item["update_evidence"] = [{"source_id": "S002", "quote": "alpha\n...\nbeta"}]
+                else:
+                    item["update_evidence"] = [
+                        {"source_id": "S002", "quote": "A B"},
+                        {"source_id": "S002", "quote": "C D"},
+                    ]
+                response_path = responses_dir / "assessment_response.json"
+                response_path.write_text(json.dumps({"raw_response": replay_response(assessment), "usage": {}}), encoding="utf-8")
+                response_hash = hashlib.sha256(response_path.read_bytes()).hexdigest()
+                output = io.StringIO()
+                with patch("os.getcwd", return_value=str(root)), \
+                     patch.dict(os.environ, {}, clear=True), \
+                     patch("wkly_rp_qc_v2.cli.complete_json", side_effect=AssertionError("provider called")), \
+                     patch("sys.stdout", output), patch("sys.stderr", io.StringIO()):
+                    self.assertEqual(main(replay_args(input_path, responses_dir, root / "offline-review")), 1)
+                run_dir = Path(next(
+                    line.split(": ", 1)[1] for line in output.getvalue().splitlines()
+                    if line.startswith(("Replay directory:", "Run directory:"))
+                ))
+                failure = json.loads((run_dir / "failure.json").read_text(encoding="utf-8"))
+                self.assertIn("assessment validation", failure["stage"])
+                notes = (run_dir / "run_notes.md").read_text(encoding="utf-8")
+                if case == "partial-repair":
+                    self.assertIn('"original_quote": "A B"', notes)
+                    self.assertIn('"restored_quote": "A  B"', notes)
+                self.assertEqual(hashlib.sha256(response_path.read_bytes()).hexdigest(), response_hash)
+                for name in ("mentor_review.md", "comparison.json", "comparison.csv"):
+                    self.assertFalse((run_dir / name).exists())
+
+    def test_replay_refuses_output_inside_historical_run_via_symlink(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            input_path, responses_dir, _, _ = replay_fixture(root)
+            alias = root / "historical-alias"
+            alias.symlink_to(responses_dir, target_is_directory=True)
+            before = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in responses_dir.iterdir()}
+            output = io.StringIO()
+            with patch("os.getcwd", return_value=str(root)), \
+                 patch.dict(os.environ, {}, clear=True), \
+                 patch("wkly_rp_qc_v2.cli.complete_json", side_effect=AssertionError("provider called")), \
+                 patch("sys.stdout", output), patch("sys.stderr", io.StringIO()):
+                self.assertEqual(
+                    main(replay_args(input_path, responses_dir, alias / "nested-output")), 2
+                )
+            self.assertEqual(output.getvalue(), "")
+            after = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in responses_dir.iterdir()}
+            self.assertEqual(before, after)
+
     def test_cli_builds_assessment_schema_from_the_extracted_commitments(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -228,6 +434,8 @@ class CliTests(unittest.TestCase):
             self.assertIn("BC Tuần 07.09 - 12.09!D7", (run_dir / "mentor_review.md").read_text(encoding="utf-8"))
             self.assertIn("BC Tuần 01.09 - 05.09!E7", (run_dir / "mentor_review.md").read_text(encoding="utf-8"))
             self.assertIn("Severity unresolved", (run_dir / "run_notes.md").read_text(encoding="utf-8"))
+            self.assertNotIn("Replay offline", (run_dir / "mentor_review.md").read_text(encoding="utf-8"))
+            self.assertNotIn("Replay offline", (run_dir / "run_notes.md").read_text(encoding="utf-8"))
             self.assertNotIn("dotenv-test-token", output.getvalue())
             self.assertNotIn("dotenv-test-token", "".join(path.read_text(encoding="utf-8") for path in run_dir.iterdir()))
 

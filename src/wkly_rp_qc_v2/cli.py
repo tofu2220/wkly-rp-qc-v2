@@ -20,6 +20,7 @@ from .assessment import (
 )
 from .evidence import build_sources, load_rows, period_context, select_scope
 from .openrouter import OpenRouterError, complete_json
+from .replay import load_saved_payload, read_replay_provenance
 from .report import write_reports, write_run_notes
 
 JsonDict = dict[str, Any]
@@ -41,6 +42,16 @@ def _parser() -> argparse.ArgumentParser:
     compare.add_argument("--role", required=True)
     compare.add_argument("--alias", action="append", default=[])
     compare.add_argument("--output", required=True, type=Path)
+
+    replay = commands.add_parser("replay", help="replay saved model responses without calling a provider")
+    replay.add_argument("--input", required=True, type=Path)
+    replay.add_argument("--previous", required=True)
+    replay.add_argument("--current", required=True)
+    replay.add_argument("--project", required=True)
+    replay.add_argument("--role", required=True)
+    replay.add_argument("--alias", action="append", default=[])
+    replay.add_argument("--responses", required=True, type=Path)
+    replay.add_argument("--output", required=True, type=Path)
     return parser
 
 
@@ -102,8 +113,83 @@ def _failed_run(run_dir: Path | None, stage: str, error: Exception, api_key: str
     print(f"FAILED ({stage}): {message}", file=sys.stderr)
 
 
+def _run_replay(args: argparse.Namespace) -> int:
+    run_dir = None
+    stage = "replay configuration/input"
+    metadata: JsonDict = {
+        "created_at_utc": datetime.now(UTC).isoformat(),
+        "model": "not called (offline replay)",
+        "usage": {},
+        "verification_mode": "offline_replay",
+        "replayed_from": str(args.responses),
+    }
+    scope: JsonDict = {"selection_warnings": []}
+    try:
+        responses_dir = args.responses.resolve(strict=True)
+        output_dir = args.output.resolve()
+        if output_dir == responses_dir or responses_dir in output_dir.parents:
+            raise InputError("Replay output must not be inside the historical response directory")
+
+        run_dir = _new_run_dir(args.output)
+        rows = load_rows(args.input)
+        scope = select_scope(rows, args.previous, args.current, args.project, args.role, args.alias)
+        sources = build_sources(scope)
+        context = period_context(scope)
+        metadata.update({
+            "input_sha256": _sha256(args.input),
+            "project": args.project,
+            "requested_aliases": args.alias,
+            "previous_sheet": scope["previous_sheet"],
+            "current_sheet": scope["current_sheet"],
+            "period_context": context,
+        })
+        _print_scope(scope)
+
+        stage = "replay provenance"
+        provenance = read_replay_provenance(args.input, responses_dir, scope, args.role, args.alias)
+        metadata.update(provenance)
+        scope["selection_warnings"].extend(provenance["provenance_warnings"])
+
+        stage = "replay extraction response"
+        extraction_payload = load_saved_payload(responses_dir / "extraction_response.json")
+        stage = "replay extraction validation"
+        commitments = validate_extraction(extraction_payload, sources)
+
+        stage = "replay assessment response"
+        assessment_payload = load_saved_payload(responses_dir / "assessment_response.json")
+        stage = "replay assessment validation"
+        assessment_payload, citation_repairs = restore_assessment_quotes(assessment_payload, sources)
+        metadata["citation_repairs"] = citation_repairs
+        assessments = validate_assessment(assessment_payload, commitments, sources)
+        metadata["policy_questions"] = [question for item in assessments for question in item["policy_questions"]]
+
+        stage = "replay report writing"
+        write_reports(run_dir, scope, sources, commitments, assessments, metadata)
+        print(
+            f"Replayed: {len(commitments)} commitments, "
+            f"{sum(bool(item['findings']) for item in assessments)} affected, "
+            f"{sum(len(item['findings']) for item in assessments)} findings"
+        )
+        print(f"Replay directory: {run_dir}")
+        return 0
+    except (InputError, OSError, json.JSONDecodeError) as error:
+        _failed_run(run_dir, stage, error, "", metadata, scope)
+        return 2 if stage in {
+            "replay configuration/input", "replay provenance",
+            "replay extraction response", "replay assessment response",
+        } else 1
+    except (ValueError, KeyError, TypeError) as error:
+        _failed_run(run_dir, stage, error, "", metadata, scope)
+        return 2 if stage in {
+            "replay configuration/input", "replay provenance",
+            "replay extraction response", "replay assessment response",
+        } else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    if args.command == "replay":
+        return _run_replay(args)
     if args.command != "compare":
         return 2
     load_dotenv(Path.cwd() / ".env", override=False)

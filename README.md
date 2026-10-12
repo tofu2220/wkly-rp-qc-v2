@@ -28,6 +28,27 @@ Use `--alias "ANAT GSM"` when the selected source rows use a known alternate pro
 
 The input must be the normalized JSON envelope with a `rows` array. Each row retains `sheet`, `source_row`, project/role/PIC fields, `actual`, `next_plan`, `issue_risk`, and matching `source_refs`. The checked-in `download/1-raw/normalized_rows.json` is the intended prototype input.
 
+## Offline replay (no API key or credits)
+
+Replay validates saved model responses against the normalized source without making a model request:
+
+```bash
+uv run wkly-rp-qc-v2 replay \
+  --input download/1-raw/normalized_rows.json \
+  --previous "BC Tuần 31.08 - 05.09" \
+  --current "BC Tuần 07.09 - 12.09" \
+  --project "SMART PARKING" \
+  --role "PTSP" \
+  --responses results/smart-parking/20261012T031440747089Z \
+  --output results/offline-review
+```
+
+The response directory must contain `run_notes.md`, `extraction_response.json`, and `assessment_response.json` from the same historical run. Replay verifies the normalized-input hash and reporting-period pair, checks response hashes and quotations, applies the current local validators and quote-restoration rule, then writes a unique child under `--output`. It does not require `OPENROUTER_API_KEY`, load `.env`, or use network access; `--rules` is not needed.
+
+The output contains `mentor_review.md`, `comparison.json`, `comparison.csv`, and `run_notes.md`. They are labeled **Replay offline — response lịch sử, không gọi AI mới**. `run_notes.md` records response hashes, historical rules hash when present, scope provenance warnings, and quote repairs. Older runs do not record project/role/alias completely, so their scope may be marked `legacy_partial`; replay does not infer missing labels from report text. If your alias or role differs from the original run's explicit comparison metadata, replay stops for review.
+
+An invalid saved response remains invalid: replay preserves failure diagnostics and writes no successful comparison files. It never filters extra assessment objects, fills missing data, or regrades model findings. Input/provenance and saved-response errors exit `2`; local extraction/assessment validation or output errors exit `1`. A successful replay confirms structural/source validity for those historical responses only; it does not evaluate new reports or prove semantic correctness.
+
 ## Results and failure behavior
 
 Assessment evidence follows a week-specific contract: extracted commitment `plan_evidence` comes from the previous week; assessment `update_evidence` cites current-week sources only and may be empty; finding evidence may compare previous-week plan quotations with current-week reporting. Every non-`Missing Closure` finding must cite at least one current-week source. `Missing Closure` cites the previous-week plan, because absence itself has no quotation. Source IDs are resolved using their supplied week metadata, not their names.
