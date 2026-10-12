@@ -59,9 +59,10 @@ def extraction_schema() -> JsonDict:
     return _obj({"commitments": _array(commitment)}, ["commitments"])
 
 
-def assessment_schema() -> JsonDict:
+def assessment_schema(commitments: list[JsonDict]) -> JsonDict:
     item = _obj({
-        "plan_id": {"type": "string"}, "source_reported_status": _nullable("string"),
+        "plan_id": _enum(tuple(commitment["plan_id"] for commitment in commitments)),
+        "source_reported_status": _nullable("string"),
         "match_confidence": _enum(MATCHES), "match_explanation": {"type": "string"},
         "reporting_clarity": _enum(CLARITIES),
         "update_evidence": {
@@ -71,7 +72,9 @@ def assessment_schema() -> JsonDict:
         "findings": _array(_finding_schema()), "requires_review": {"type": "boolean"},
         "review_reasons": _array({"type": "string"}), "policy_questions": _array({"type": "string"}),
     }, ["plan_id", "source_reported_status", "match_confidence", "match_explanation", "reporting_clarity", "update_evidence", "findings", "requires_review", "review_reasons", "policy_questions"])
-    return _obj({"assessments": _array(item)}, ["assessments"])
+    assessments = _array(item)
+    assessments.update(minItems=len(commitments), maxItems=len(commitments))
+    return _obj({"assessments": assessments}, ["assessments"])
 
 
 def extraction_messages(scope: JsonDict, sources: JsonDict, context: JsonDict) -> list[JsonDict]:
@@ -95,11 +98,13 @@ def assessment_messages(commitments: list[JsonDict], scope: JsonDict, sources: J
         "treat that severity as proposed, not confirmed. Unknown severity is null with unresolved status. Never convert unresolved "
         "thresholds to approved policy. Match confidence, source-reported status, and reporting clarity are independent. "
         "Search Actual, Issue/Risk, and Next Plan across every selected current project role; a Next Plan is not proof of completion. "
+        "Return exactly one assessment for each supplied commitment plan_id and no other assessment objects; do not emit meta, summary, or top-level review assessment objects. "
+        "Set requires_review to true when review_reasons or policy_questions is nonempty or any finding severity_status is not confirmed; otherwise set it to false. "
         "Do not infer handover from cross-role resemblance or borrow another commitment's status, blocker or reason. "
         "Never invent or assert completion, status, dates, delay reasons, or handovers absent from source text; use null when status is unreported and cite exact source text for every assessment claim. "
         "An explained delay is not by itself a Milestone Conflict; compare like stages and dates. A completed handoff can be a valid "
         "update, while an internal QC bug must not be invented. An elapsed checkpoint copied unchanged is not a current checkpoint; "
-        "use historical period context, never today's date. Preserve exact evidence quotes. "
+        "use historical period context, never today's date. Every quote must be one contiguous exact source substring. Never join disjoint excerpts with ellipses; use separate evidence entries for separate excerpts. "
         "update_evidence must cite only sources whose week is current. Never put previous-week plan quotations in update_evidence. "
         "Finding evidence may cite previous-week plans as comparison context. Every finding except Missing Closure must cite at least one "
         "current-week source. Missing Closure must cite previous-week plan evidence. Absence has no quotation; do not invent current-week "

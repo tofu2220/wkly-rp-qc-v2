@@ -138,7 +138,7 @@ def main(argv: list[str] | None = None) -> int:
         commitments = validate_extraction(extraction["payload"], sources)
 
         stage = "assessment request"
-        assessment = complete_json(assessment_messages(commitments, scope, sources, context, rules_text), assessment_schema(), api_key=api_key, model=model)
+        assessment = complete_json(assessment_messages(commitments, scope, sources, context, rules_text), assessment_schema(commitments), api_key=api_key, model=model)
         _response_file(run_dir, "assessment", assessment)
         metadata["usage"]["assessment"] = assessment.get("usage", {})
         stage = "assessment validation"

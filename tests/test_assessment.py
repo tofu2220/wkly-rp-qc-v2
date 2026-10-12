@@ -36,6 +36,42 @@ def assessment(commitment=None):
 
 
 class AssessmentTests(unittest.TestCase):
+    def test_assessment_schema_limits_ids_and_item_count_to_commitments(self):
+        second = copy.deepcopy(COMMITMENT)
+        second["plan_id"] = "P002"
+        commitments = [COMMITMENT, second]
+
+        schema = assessment_schema(commitments)
+
+        assessments = schema["properties"]["assessments"]
+        item = assessments["items"]["properties"]
+        self.assertEqual(item["plan_id"]["enum"], ["P001", "P002"])
+        self.assertEqual(assessments["minItems"], 2)
+        self.assertEqual(assessments["maxItems"], 2)
+
+    def test_assessment_schema_empty_commitments_has_zero_items(self):
+        schema = assessment_schema([])
+        assessments = schema["properties"]["assessments"]
+
+        self.assertEqual(assessments["items"]["properties"]["plan_id"]["enum"], [])
+        self.assertEqual(assessments["minItems"], 0)
+        self.assertEqual(assessments["maxItems"], 0)
+
+    def test_assessment_coverage_rejects_duplicate_and_substituted_ids(self):
+        second = copy.deepcopy(COMMITMENT)
+        second["plan_id"] = "P002"
+        commitments = [COMMITMENT, second]
+        duplicate = assessment()
+        substituted = assessment()
+        substituted["plan_id"] = "P999"
+
+        for items in ([assessment(), duplicate], [assessment(), substituted]):
+            with (
+                self.subTest(plan_ids=[item["plan_id"] for item in items]),
+                self.assertRaisesRegex(ValueError, "exactly one entry per commitment"),
+            ):
+                validate_assessment({"assessments": items}, commitments, SOURCES)
+
     def _assessment_payload(self, *, update_quote, finding_quotes=()):
         result = assessment()
         result["update_evidence"] = [{"source_id": "C1", "quote": update_quote}]
@@ -341,6 +377,33 @@ class AssessmentTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "question_for_PM"):
             validate_assessment({"assessments": [result]}, [COMMITMENT], SOURCES)
 
+    def test_requires_review_must_match_findings_and_policy_state(self):
+        result = assessment()
+        result["findings"] = [{
+            "rule": "Closure Incomplete", "severity": "Suggestion", "severity_status": "proposed",
+            "explanation": "A checkpoint is not reported.",
+            "evidence": [{"source_id": "C1", "quote": "Đã bàn giao API"}],
+            "question_for_PM": "What is the next checkpoint?",
+        }]
+        result["requires_review"] = False
+        result["review_reasons"] = []
+        result["policy_questions"] = []
+
+        with self.assertRaisesRegex(ValueError, "requires_review must agree"):
+            validate_assessment({"assessments": [result]}, [COMMITMENT], SOURCES)
+
+        result["requires_review"] = True
+        self.assertEqual(validate_assessment({"assessments": [result]}, [COMMITMENT], SOURCES)[0]["plan_id"], "P001")
+
+        result["findings"][0]["severity"] = "Warning"
+        result["findings"][0]["severity_status"] = "confirmed"
+        result["requires_review"] = False
+        self.assertEqual(validate_assessment({"assessments": [result]}, [COMMITMENT], SOURCES)[0]["plan_id"], "P001")
+
+        result["policy_questions"] = ["Confirm the policy boundary."]
+        with self.assertRaisesRegex(ValueError, "requires_review must agree"):
+            validate_assessment({"assessments": [result]}, [COMMITMENT], SOURCES)
+
     def test_prompts_pin_policy_and_reporting_distinctions(self):
         extraction = extraction_messages({"previous_sheet": "prior"}, SOURCES, {})
         assessment_prompt = assessment_messages([COMMITMENT], {"current_sheet": "current", "current_rows": []}, SOURCES, {}, "Zurich severity mentor-confirmed")
@@ -357,14 +420,24 @@ class AssessmentTests(unittest.TestCase):
             "Source IDs and plan IDs do not encode reporting-week meaning",
         ):
             self.assertIn(phrase.lower(), text.lower())
+        for phrase in (
+            "Return exactly one assessment for each supplied commitment plan_id",
+            "Do not emit meta, summary, or top-level review assessment objects",
+            "Set requires_review to true when review_reasons or policy_questions is nonempty",
+            "or any finding severity_status is not confirmed; otherwise set it to false",
+            "Every quote must be one contiguous exact source substring",
+            "Never join disjoint excerpts with ellipses",
+            "Use separate evidence entries for separate excerpts",
+        ):
+            self.assertIn(phrase.lower(), text.lower())
         self.assertEqual(extraction_schema()["additionalProperties"], False)
-        self.assertEqual(assessment_schema()["additionalProperties"], False)
-        schema = assessment_schema()["properties"]["assessments"]["items"]["properties"]
+        self.assertEqual(assessment_schema([COMMITMENT])["additionalProperties"], False)
+        schema = assessment_schema([COMMITMENT])["properties"]["assessments"]["items"]["properties"]
         self.assertIn("current-week sources", schema["update_evidence"]["description"])
         finding_evidence = schema["findings"]["items"]["properties"]["evidence"]["description"]
         self.assertIn("current-week source", finding_evidence)
         self.assertIn("previous-week plan", finding_evidence)
-        severity = assessment_schema()["properties"]["assessments"]["items"]["properties"]["findings"]["items"]["properties"]["severity"]
+        severity = assessment_schema([COMMITMENT])["properties"]["assessments"]["items"]["properties"]["findings"]["items"]["properties"]["severity"]
         self.assertEqual(severity["anyOf"][0]["enum"], ["Warning", "Suggestion"])
 
 

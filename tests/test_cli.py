@@ -1,3 +1,4 @@
+import copy
 import csv
 import io
 import json
@@ -68,7 +69,106 @@ def quote_repair_responses(input_path, *, update_quote, finding_quotes=(), updat
     return extracted, assessed, raw, sources, current_id
 
 
+def two_commitment_responses(input_path):
+    rows = json.loads(input_path.read_text(encoding="utf-8"))["rows"]
+    scope = select_scope(rows, "BC Tuần 01.09 - 05.09", "BC Tuần 07.09 - 12.09", "SMART PARKING", "PTSP", [])
+    sources = build_sources(scope)
+    previous_id = next(key for key, source in sources.items() if source["week"] == "previous")
+    current_id = next(key for key, source in sources.items() if source["week"] == "current" and source["field"] == "actual")
+    commitments = [{
+        "plan_id": plan_id, "planned_commitment": f"Deliverable {plan_id}",
+        "plan_evidence": [{"source_id": previous_id, "quote": "Ship API"}], "parent_plan_id": None,
+        "planned_stage": None, "task_owner": None, "planned_deadline_text": None,
+    } for plan_id in ("P001", "P002")]
+    extraction = {"commitments": commitments}
+    assessments = [{
+        "plan_id": commitment["plan_id"], "source_reported_status": "Reported",
+        "match_confidence": "Confirmed", "match_explanation": "Selected evidence is relevant.",
+        "reporting_clarity": "Sufficient",
+        "update_evidence": [
+            {"source_id": current_id, "quote": "alpha"},
+            {"source_id": current_id, "quote": "beta"},
+        ],
+        "findings": [], "requires_review": False, "review_reasons": [], "policy_questions": [],
+    } for commitment in commitments]
+    assessment = {"assessments": assessments}
+    raw_assessment = {"choices": [{"message": {"content": json.dumps(assessment, ensure_ascii=False)}}]}
+    return extraction, assessment, raw_assessment, current_id
+
+
 class CliTests(unittest.TestCase):
+    def test_cli_builds_assessment_schema_from_the_extracted_commitments(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            previous = row("BC Tuần 01.09 - 05.09", 7)
+            current = row("BC Tuần 07.09 - 12.09", 7)
+            current["actual"] = "alpha\nbeta"
+            input_path, rules_path = fixture_files(root, [previous, current])
+            extraction, assessment, raw_assessment, _ = two_commitment_responses(input_path)
+            requests = []
+            responses = iter((
+                {"payload": extraction, "raw_response": {"stage": "extraction"}, "usage": {}},
+                {"payload": assessment, "raw_response": raw_assessment, "usage": {}},
+            ))
+
+            def call(messages, schema, *, api_key, model):
+                requests.append((messages, schema))
+                return next(responses)
+
+            output = io.StringIO()
+            with patch("os.getcwd", return_value=str(root)), \
+                 patch.dict(os.environ, {"OPENROUTER_API_KEY": "dummy-token"}, clear=True), \
+                 patch("wkly_rp_qc_v2.cli.complete_json", side_effect=call), \
+                 patch("sys.stdout", output), patch("sys.stderr", io.StringIO()):
+                self.assertEqual(main(run_args(root, input_path, rules_path)), 0)
+
+            self.assertEqual(requests[0][1], extraction_schema())
+            assessment_schema = requests[1][1]
+            assessment_array = assessment_schema["properties"]["assessments"]
+            self.assertEqual(assessment_array["items"]["properties"]["plan_id"]["enum"], ["P001", "P002"])
+            self.assertEqual(assessment_array["minItems"], 2)
+            self.assertEqual(assessment_array["maxItems"], 2)
+            self.assertIn("Return exactly one assessment", requests[1][0][0]["content"])
+            run_dir = Path(output.getvalue().strip().splitlines()[-1].split(": ", 1)[1])
+            self.assertTrue((run_dir / "comparison.json").exists())
+
+    def test_cli_rejects_extra_assessments_and_discontinuous_quotes(self):
+        cases = ("extra-assessment", "ellipsized-quote")
+        for case in cases:
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                previous = row("BC Tuần 01.09 - 05.09", 7)
+                current = row("BC Tuần 07.09 - 12.09", 7)
+                current["actual"] = "alpha\nbeta"
+                input_path, rules_path = fixture_files(root, [previous, current])
+                extraction, assessment, _, current_id = two_commitment_responses(input_path)
+                if case == "extra-assessment":
+                    extra = copy.deepcopy(assessment["assessments"][0])
+                    extra["plan_id"] = "meta"
+                    assessment["assessments"].append(extra)
+                else:
+                    assessment["assessments"][0]["update_evidence"] = [{
+                        "source_id": current_id, "quote": "alpha\n...\nbeta",
+                    }]
+                raw_assessment = {"choices": [{"message": {"content": json.dumps(assessment, ensure_ascii=False)}}]}
+                responses = iter((
+                    {"payload": extraction, "raw_response": {"stage": "extraction"}, "usage": {}},
+                    {"payload": assessment, "raw_response": raw_assessment, "usage": {}},
+                ))
+                output = io.StringIO()
+                with patch("os.getcwd", return_value=str(root)), \
+                     patch.dict(os.environ, {"OPENROUTER_API_KEY": "dummy-token"}, clear=True), \
+                     patch("wkly_rp_qc_v2.cli.complete_json", side_effect=responses), \
+                     patch("sys.stdout", output), patch("sys.stderr", io.StringIO()):
+                    self.assertEqual(main(run_args(root, input_path, rules_path)), 1)
+
+                run_dir = Path(output.getvalue().strip().splitlines()[-1].split(": ", 1)[1])
+                failure = json.loads((run_dir / "failure.json").read_text(encoding="utf-8"))
+                self.assertEqual(failure["stage"], "assessment validation")
+                self.assertTrue((run_dir / "assessment_response.json").exists())
+                for name in ("comparison.json", "comparison.csv", "mentor_review.md"):
+                    self.assertFalse((run_dir / name).exists())
+
     def test_offline_end_to_end_writes_four_reports_and_counts_findings(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -97,14 +197,19 @@ class CliTests(unittest.TestCase):
             results = iter([extracted, assessed])
             requests = []
             def call(messages, schema, *, api_key, model):
-                requests.append((api_key, model))
+                requests.append((api_key, model, schema))
                 payload = next(results)
                 return {"payload": payload, "raw_response": {"ok": True}, "usage": {"total_tokens": 9}}
             output = io.StringIO()
             with patch("os.getcwd", return_value=str(root)), patch.dict(os.environ, {"OPENROUTER_MODEL": "shell-model"}, clear=True), patch("wkly_rp_qc_v2.cli.complete_json", side_effect=call) as client, patch("sys.stdout", output):
                 self.assertEqual(main(run_args(root, input_path, rules_path)), 0)
             self.assertEqual(client.call_count, 2)
-            self.assertEqual(requests, [("dotenv-test-token", "shell-model")] * 2)
+            self.assertEqual([(key, model) for key, model, _ in requests], [("dotenv-test-token", "shell-model")] * 2)
+            self.assertEqual(requests[0][2], extraction_schema())
+            assessments_schema = requests[1][2]["properties"]["assessments"]
+            self.assertEqual(assessments_schema["items"]["properties"]["plan_id"]["enum"], ["P001"])
+            self.assertEqual(assessments_schema["minItems"], 1)
+            self.assertEqual(assessments_schema["maxItems"], 1)
             self.assertIn("Selected previous", output.getvalue())
             self.assertIn("Run directory:", output.getvalue())
             run_dir = Path(output.getvalue().strip().splitlines()[-1].split(": ", 1)[1])
