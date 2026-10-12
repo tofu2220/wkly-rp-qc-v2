@@ -43,6 +43,9 @@ class CliTests(unittest.TestCase):
     def test_offline_end_to_end_writes_four_reports_and_counts_findings(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
+            (root / ".env").write_text(
+                'OPENROUTER_API_KEY="dotenv-test-token"\nOPENROUTER_MODEL="dotenv-model"\n', encoding="utf-8"
+            )
             input_path, rules_path = fixture_files(root)
             initial_scope = select_scope(json.loads(input_path.read_text())["rows"], "BC Tuần 01.09 - 05.09", "BC Tuần 07.09 - 12.09", "SMART PARKING", "PTSP", [])
             sources = build_sources(initial_scope)
@@ -58,18 +61,21 @@ class CliTests(unittest.TestCase):
                 "match_explanation": "Cùng deliverable", "reporting_clarity": "Incomplete",
                 "update_evidence": [{"source_id": current_id, "quote": "Đã bàn giao API"}],
                 "findings": [
-                    {"rule": "Closure Incomplete", "severity": "Suggestion", "severity_status": "proposed", "explanation": "Thiếu checkpoint", "evidence": [{"source_id": current_id, "quote": "Đã bàn giao API"}], "question_for_PM": "Khi nào tiếp tục?"},
+                    {"rule": "Identity Uncertain", "severity": "Suggestion", "severity_status": "proposed", "explanation": "Chưa rõ đây có phải cam kết API đã lên kế hoạch.", "evidence": [{"source_id": prior_id, "quote": "Ship API"}, {"source_id": current_id, "quote": "Đã bàn giao API"}], "question_for_PM": "Đây có phải cam kết API đã lên kế hoạch?"},
                     {"rule": "Status Ambiguous", "severity": None, "severity_status": "unresolved", "explanation": "Chưa rõ trạng thái", "evidence": [{"source_id": current_id, "quote": "Đã bàn giao API"}], "question_for_PM": "Có thể xác nhận trạng thái bàn giao?"},
                 ], "requires_review": True, "review_reasons": [], "policy_questions": ["Severity unresolved"],
             }]}
             results = iter([extracted, assessed])
+            requests = []
             def call(messages, schema, *, api_key, model):
+                requests.append((api_key, model))
                 payload = next(results)
                 return {"payload": payload, "raw_response": {"ok": True}, "usage": {"total_tokens": 9}}
             output = io.StringIO()
-            with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-token"}), patch("wkly_rp_qc_v2.cli.complete_json", side_effect=call) as client, patch("sys.stdout", output):
+            with patch("os.getcwd", return_value=str(root)), patch.dict(os.environ, {"OPENROUTER_MODEL": "shell-model"}, clear=True), patch("wkly_rp_qc_v2.cli.complete_json", side_effect=call) as client, patch("sys.stdout", output):
                 self.assertEqual(main(run_args(root, input_path, rules_path)), 0)
             self.assertEqual(client.call_count, 2)
+            self.assertEqual(requests, [("dotenv-test-token", "shell-model")] * 2)
             self.assertIn("Selected previous", output.getvalue())
             self.assertIn("Run directory:", output.getvalue())
             run_dir = Path(output.getvalue().strip().splitlines()[-1].split(": ", 1)[1])
@@ -77,20 +83,25 @@ class CliTests(unittest.TestCase):
             self.assertTrue(expected.issubset({path.name for path in run_dir.iterdir()}))
             comparison = json.loads((run_dir / "comparison.json").read_text(encoding="utf-8"))
             self.assertEqual(comparison["counts"], {"commitments": 1, "affected_commitments": 1, "findings": 2})
+            identity_finding = comparison["assessments"][0]["findings"][0]
+            self.assertEqual([item["source_id"] for item in identity_finding["evidence"]], [prior_id, current_id])
             csv_bytes = (run_dir / "comparison.csv").read_bytes()
             self.assertTrue(csv_bytes.startswith(b"\xef\xbb\xbf"))
             records = list(csv.DictReader(io.StringIO(csv_bytes.decode("utf-8-sig"))))
             self.assertEqual(records[0]["plan_id"], "P001")
-            self.assertIn("Thiếu checkpoint", records[0]["findings"])
+            self.assertIn("Identity Uncertain", records[0]["findings"])
             self.assertIn("Confirmed", (run_dir / "mentor_review.md").read_text(encoding="utf-8"))
             self.assertIn("BC Tuần 07.09 - 12.09!D7", (run_dir / "mentor_review.md").read_text(encoding="utf-8"))
+            self.assertIn("BC Tuần 01.09 - 05.09!E7", (run_dir / "mentor_review.md").read_text(encoding="utf-8"))
             self.assertIn("Severity unresolved", (run_dir / "run_notes.md").read_text(encoding="utf-8"))
+            self.assertNotIn("dotenv-test-token", output.getvalue())
+            self.assertNotIn("dotenv-test-token", "".join(path.read_text(encoding="utf-8") for path in run_dir.iterdir()))
 
     def test_missing_key_stops_before_api_and_preserves_failure_diagnostic(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             input_path, rules_path = fixture_files(root)
-            with patch.dict(os.environ, {}, clear=True), patch("wkly_rp_qc_v2.cli.complete_json") as client:
+            with patch("os.getcwd", return_value=str(root)), patch.dict(os.environ, {}, clear=True), patch("wkly_rp_qc_v2.cli.complete_json") as client:
                 self.assertEqual(main(run_args(root, input_path, rules_path)), 2)
             client.assert_not_called()
             run_dir = next((root / "results").iterdir())
@@ -105,7 +116,7 @@ class CliTests(unittest.TestCase):
             args = run_args(root, input_path, rules_path)
             args[args.index("BC Tuần 01.09 - 05.09")] = "BC Tuần 01.09 - 05.09  "
             output = io.StringIO()
-            with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-token"}), patch("wkly_rp_qc_v2.cli.complete_json") as client, patch("sys.stdout", output):
+            with patch("os.getcwd", return_value=str(root)), patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-token"}), patch("wkly_rp_qc_v2.cli.complete_json") as client, patch("sys.stdout", output):
                 self.assertEqual(main(args), 2)
             client.assert_not_called()
             self.assertTrue(any((root / "results").iterdir()))
@@ -129,13 +140,47 @@ class CliTests(unittest.TestCase):
                     if fail_second:
                         raise OpenRouterError("provider error", raw_response={"error": "safe"})
                     raise AssertionError("Assessment call should not happen for invalid quote")
-                with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-token"}), patch("wkly_rp_qc_v2.cli.complete_json", side_effect=call), patch("sys.stdout", io.StringIO()):
+                with patch("os.getcwd", return_value=str(root)), patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-token"}), patch("wkly_rp_qc_v2.cli.complete_json", side_effect=call), patch("sys.stdout", io.StringIO()):
                     self.assertEqual(main(run_args(root, input_path, rules_path)), 1)
                 run_dir = next((root / "results").iterdir())
                 self.assertTrue((run_dir / "failure.json").exists())
                 self.assertTrue((run_dir / "extraction_response.json").exists())
                 self.assertFalse((run_dir / "comparison.json").exists())
                 self.assertFalse((run_dir / "mentor_review.md").exists())
+
+    def test_previous_week_update_evidence_fails_validation_without_retry_or_reports(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            input_path, rules_path = fixture_files(root)
+            scope = select_scope(json.loads(input_path.read_text())["rows"], "BC Tuần 01.09 - 05.09", "BC Tuần 07.09 - 12.09", "SMART PARKING", "PTSP", [])
+            sources = build_sources(scope)
+            prior_id = next(key for key, item in sources.items() if item["week"] == "previous")
+            extracted = {"commitments": [{
+                "plan_id": "P001", "planned_commitment": "Ship API",
+                "plan_evidence": [{"source_id": prior_id, "quote": "Ship API"}], "parent_plan_id": None,
+                "planned_stage": None, "task_owner": None, "planned_deadline_text": None,
+            }]}
+            assessment = {"assessments": [{
+                "plan_id": "P001", "source_reported_status": "Đã bàn giao", "match_confidence": "Confirmed",
+                "match_explanation": "Same work", "reporting_clarity": "Sufficient",
+                "update_evidence": [{"source_id": prior_id, "quote": "Ship API"}], "findings": [],
+                "requires_review": False, "review_reasons": [], "policy_questions": [],
+            }]}
+            with patch("os.getcwd", return_value=str(root)), \
+                 patch.dict(os.environ, {"OPENROUTER_API_KEY": "dummy-token"}, clear=True), \
+                 patch("wkly_rp_qc_v2.cli.complete_json", side_effect=[
+                     {"payload": extracted, "raw_response": {"stage": "extract"}, "usage": {}},
+                     {"payload": assessment, "raw_response": {"stage": "assess"}, "usage": {}},
+                 ]) as client, patch("sys.stdout", io.StringIO()), patch("sys.stderr", io.StringIO()):
+                self.assertEqual(main(run_args(root, input_path, rules_path)), 1)
+            self.assertEqual(client.call_count, 2)
+            run_dir = next((root / "results").iterdir())
+            failure = json.loads((run_dir / "failure.json").read_text(encoding="utf-8"))
+            self.assertEqual(failure["stage"], "assessment validation")
+            self.assertIn("current-week", failure["error"])
+            self.assertEqual(json.loads((run_dir / "assessment_response.json").read_text(encoding="utf-8"))["raw_response"], {"stage": "assess"})
+            for name in ("mentor_review.md", "comparison.json", "comparison.csv"):
+                self.assertFalse((run_dir / name).exists())
 
     def test_report_escapes_markdown_and_round_trips_multiline_vietnamese(self):
         source = {"S1": {"source_id": "S1", "week": "previous", "field": "next_plan", "sheet": "S", "source_row": 3, "cell": "E3", "text": "<b>|\nDòng hai =x"}}

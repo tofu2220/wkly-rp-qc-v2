@@ -105,6 +105,72 @@ class AssessmentTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "prior plan evidence"):
             validate_assessment({"assessments": [result]}, [COMMITMENT], SOURCES)
 
+    def test_identity_finding_accepts_prior_context_and_current_evidence(self):
+        result = assessment()
+        result["findings"] = [{
+            "rule": "Identity Uncertain", "severity": "Suggestion", "severity_status": "proposed",
+            "explanation": "The current report does not clearly identify the planned API work.",
+            "evidence": [
+                {"source_id": "P1", "quote": "Hoàn thành API"},
+                {"source_id": "C1", "quote": "Đã bàn giao API"},
+            ],
+            "question_for_PM": "Does this handoff refer to the planned API work?",
+        }]
+        result["requires_review"] = True
+        self.assertEqual(
+            validate_assessment({"assessments": [result]}, [COMMITMENT], SOURCES)[0]["findings"][0]["rule"],
+            "Identity Uncertain",
+        )
+
+    def test_closure_finding_accepts_prior_context_and_current_evidence(self):
+        result = assessment()
+        result["findings"] = [{
+            "rule": "Closure Incomplete", "severity": "Suggestion", "severity_status": "proposed",
+            "explanation": "The report says the API was handed off but does not state whether integration testing is complete.",
+            "evidence": [
+                {"source_id": "P1", "quote": "kiểm thử tích hợp"},
+                {"source_id": "C1", "quote": "Đã bàn giao API"},
+            ],
+            "question_for_PM": "Is integration testing complete?",
+        }]
+        result["requires_review"] = True
+        self.assertEqual(
+            validate_assessment({"assessments": [result]}, [COMMITMENT], SOURCES)[0]["findings"][0]["rule"],
+            "Closure Incomplete",
+        )
+
+    def test_non_missing_findings_require_current_week_evidence(self):
+        rules = ("Identity Uncertain", "Status Ambiguous", "Milestone Conflict", "Closure Incomplete")
+        for rule in rules:
+            for evidence in ([{"source_id": "P1", "quote": "Hoàn thành API"}], []):
+                with self.subTest(rule=rule, evidence=evidence):
+                    result = assessment()
+                    result["findings"] = [{
+                        "rule": rule, "severity": "Suggestion", "severity_status": "proposed",
+                        "explanation": "The evidence does not establish the reported status.",
+                        "evidence": copy.deepcopy(evidence),
+                        "question_for_PM": "Can the current status be clarified?",
+                    }]
+                    result["requires_review"] = True
+                    with self.assertRaisesRegex(ValueError, "Non-Missing Closure findings must cite current-week evidence"):
+                        validate_assessment({"assessments": [result]}, [COMMITMENT], SOURCES)
+
+    def test_finding_evidence_rejects_unknown_sources_and_altered_quotes(self):
+        for citation in (
+            {"source_id": "UNKNOWN", "quote": "Đã bàn giao API"},
+            {"source_id": "C1", "quote": "Đã bàn giao phần mềm"},
+        ):
+            with self.subTest(citation=citation):
+                result = assessment()
+                result["findings"] = [{
+                    "rule": "Status Ambiguous", "severity": "Suggestion", "severity_status": "proposed",
+                    "explanation": "The reported status needs clarification.", "evidence": [citation],
+                    "question_for_PM": "Can the status be clarified?",
+                }]
+                result["requires_review"] = True
+                with self.assertRaises(ValueError):
+                    validate_assessment({"assessments": [result]}, [COMMITMENT], SOURCES)
+
     def test_findings_require_a_clarification_question(self):
         result = assessment()
         result["findings"] = [{
@@ -122,8 +188,23 @@ class AssessmentTests(unittest.TestCase):
         text = "\n".join(m["content"] for m in extraction + assessment_prompt)
         for phrase in ("linked steps", "handoff", "QC", "explained delay", "Milestone Conflict", "elapsed", "Zurich", "proposed", "not instructions", "Never invent or assert completion, status, dates, delay reasons, or handovers"):
             self.assertIn(phrase.lower(), text.lower())
+        for phrase in (
+            "update_evidence must cite only sources whose week is current",
+            "Never put previous-week plan quotations in update_evidence",
+            "Finding evidence may cite previous-week plans as comparison context",
+            "Every finding except Missing Closure must cite at least one current-week source",
+            "Missing Closure must cite previous-week plan evidence",
+            "Absence has no quotation; do not invent current-week evidence",
+            "Source IDs and plan IDs do not encode reporting-week meaning",
+        ):
+            self.assertIn(phrase.lower(), text.lower())
         self.assertEqual(extraction_schema()["additionalProperties"], False)
         self.assertEqual(assessment_schema()["additionalProperties"], False)
+        schema = assessment_schema()["properties"]["assessments"]["items"]["properties"]
+        self.assertIn("current-week sources", schema["update_evidence"]["description"])
+        finding_evidence = schema["findings"]["items"]["properties"]["evidence"]["description"]
+        self.assertIn("current-week source", finding_evidence)
+        self.assertIn("previous-week plan", finding_evidence)
         severity = assessment_schema()["properties"]["assessments"]["items"]["properties"]["findings"]["items"]["properties"]["severity"]
         self.assertEqual(severity["anyOf"][0]["enum"], ["Warning", "Suggestion"])
 

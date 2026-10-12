@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from dotenv import load_dotenv
+
 from .assessment import (
     assessment_messages,
     assessment_schema,
@@ -103,6 +105,7 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.command != "compare":
         return 2
+    load_dotenv(Path.cwd() / ".env", override=False)
     run_dir = None
     stage = "configuration/input"
     api_key = os.environ.get("OPENROUTER_API_KEY", "")
