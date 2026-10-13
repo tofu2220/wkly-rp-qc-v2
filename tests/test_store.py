@@ -8,13 +8,30 @@ from zipfile import BadZipFile
 
 from openpyxl import Workbook
 
-from wkly_rp_qc_v2.store import import_workbook, initialize_store
+from wkly_rp_qc_v2.store import (
+    confirm_project_alias,
+    find_source_conflicts,
+    get_snapshot,
+    get_template_mapping,
+    import_workbook,
+    initialize_store,
+    list_snapshots,
+    resolve_project_alias,
+    save_template_mapping,
+)
 
 
-def make_workbook(path: Path, *, actual: str | None = "Reported progress", unknown: bool = False) -> None:
+def make_workbook(
+    path: Path,
+    *,
+    actual: str | None = "Reported progress",
+    unknown: bool = False,
+    period_name: str = "BC Tuần 01.09 - 05.09",
+    draft: bool = False,
+) -> None:
     workbook = Workbook()
     sheet = workbook.active
-    sheet.title = "BC Tuần 01.09 - 05.09"
+    sheet.title = period_name
     if unknown:
         sheet["A1"] = "Unknown header"
         sheet["B9"] = "Unmapped value"
@@ -26,6 +43,9 @@ def make_workbook(path: Path, *, actual: str | None = "Reported progress", unkno
             "C6": actual, "D6": "Deliver feature", "E6": "", "F6": "Owner",
         }.items():
             sheet[address] = value
+        if draft:
+            for address in ("C6", "D6", "E6"):
+                sheet[address] = None
     workbook.save(path)
     workbook.close()
 
@@ -43,12 +63,15 @@ class WorkbookStoreTests(unittest.TestCase):
             initialize_store(database)
             initialize_store(database)
 
-            self.assertEqual(scalar(database, "SELECT version FROM schema_version"), 1)
+            self.assertEqual(scalar(database, "SELECT MAX(version) FROM schema_version"), 2)
             with sqlite3.connect(database) as connection:
                 tables = {row[0] for row in connection.execute(
                     "SELECT name FROM sqlite_master WHERE type='table'"
                 )}
-            self.assertTrue({"workbook_versions", "report_snapshots", "report_rows"} <= tables)
+            self.assertTrue({
+                "workbook_versions", "report_snapshots", "report_rows", "template_mappings",
+                "project_identities", "project_aliases",
+            } <= tables)
 
     def test_import_stores_original_and_source_linked_rows(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -161,6 +184,109 @@ class WorkbookStoreTests(unittest.TestCase):
             self.assertEqual(status, "mapping_required")
             self.assertEqual(count, 0)
             self.assertEqual(scalar(database, "SELECT COUNT(*) FROM workbook_versions"), 1)
+
+    def test_schema_migration_adds_mapping_and_alias_tables(self):
+        with tempfile.TemporaryDirectory() as temp:
+            database = Path(temp) / "store.sqlite3"
+            initialize_store(database)
+            with sqlite3.connect(database) as connection:
+                connection.execute("INSERT OR IGNORE INTO schema_version(version) VALUES (1)")
+
+            initialize_store(database)
+
+            self.assertEqual(scalar(database, "SELECT MAX(version) FROM schema_version"), 2)
+            with sqlite3.connect(database) as connection:
+                tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            self.assertIn("template_mappings", tables)
+            self.assertIn("project_aliases", tables)
+
+    def test_snapshot_queries_keep_raw_source_addresses_and_workbook_version(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "snapshot.xlsx"
+            database = root / "store.sqlite3"
+            make_workbook(source)
+            imported = import_workbook(source, database, root / "files")
+
+            snapshot = get_snapshot(database, 1)
+            listed = list_snapshots(database)
+
+            self.assertEqual(len(listed), 1)
+            self.assertEqual(snapshot["workbook_id"], imported.workbook_id)
+            self.assertEqual(snapshot["workbook_sha256"], imported.sha256)
+            self.assertEqual(snapshot["rows"][0]["source_refs"]["actual"], "C6")
+            self.assertEqual(snapshot["rows"][0]["field_provenance"]["actual"]["source_cell"], "C6")
+            self.assertEqual(snapshot["rows"][0]["project_label"], "Project")
+
+    def test_snapshots_keep_unknown_year_and_draft_state_and_sort_by_period(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            database, storage = root / "store.sqlite3", root / "files"
+            for filename, period, draft in (
+                ("sep.xlsx", "BC Tuần 07.09 - 12.09", False),
+                ("aug.xlsx", "BC Tuần 31.08 - 05.09", False),
+                ("draft.xlsx", "BC Tuần 14.09 - 18.09", True),
+            ):
+                source = root / filename
+                make_workbook(source, period_name=period, draft=draft)
+                import_workbook(source, database, storage)
+
+            snapshots = list_snapshots(database)
+
+            self.assertEqual([snapshot["sheet_name"] for snapshot in snapshots], [
+                "BC Tuần 31.08 - 05.09", "BC Tuần 07.09 - 12.09", "BC Tuần 14.09 - 18.09",
+            ])
+            self.assertTrue(all(snapshot["chronology_status"] == "year_unknown" for snapshot in snapshots))
+            self.assertEqual(snapshots[-1]["sheet_state"], "draft_or_incomplete")
+            self.assertIsNone(snapshots[0]["reporting_period"]["year"])
+
+    def test_overlapping_snapshots_are_reported_without_combining_rows(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            database, storage = root / "store.sqlite3", root / "files"
+            for filename, actual in (("first.xlsx", "First source"), ("second.xlsx", "Second source")):
+                source = root / filename
+                make_workbook(source, actual=actual)
+                import_workbook(source, database, storage)
+
+            conflicts = find_source_conflicts(database)
+
+            self.assertEqual(len(conflicts), 1)
+            self.assertEqual((conflicts[0]["project_label"], conflicts[0]["role_label"]), ("Project", "PTSP"))
+            self.assertEqual(len(conflicts[0]["snapshots"]), 2)
+            self.assertEqual(len({item["workbook_id"] for item in conflicts[0]["snapshots"]}), 2)
+            self.assertEqual(scalar(database, "SELECT COUNT(*) FROM report_rows"), 2)
+
+    def test_mapping_decision_is_versioned_and_reusable(self):
+        with tempfile.TemporaryDirectory() as temp:
+            database = Path(temp) / "store.sqlite3"
+            initialize_store(database)
+            mapping = {"project_col": 2, "role_col": 2, "actual_col": 3}
+
+            save_template_mapping(database, "early", "1", mapping, source_reference="verified template mapping")
+            save_template_mapping(database, "early", "2", {**mapping, "actual_col": 4}, source_reference="revised mapping")
+
+            self.assertEqual(get_template_mapping(database, "early", "1")["mapping"], mapping)
+            self.assertEqual(get_template_mapping(database, "early", "2")["mapping"]["actual_col"], 4)
+            self.assertIsNone(get_template_mapping(database, "early", "missing"))
+
+    def test_project_alias_requires_explicit_record(self):
+        with tempfile.TemporaryDirectory() as temp:
+            database = Path(temp) / "store.sqlite3"
+            initialize_store(database)
+
+            before = resolve_project_alias(database, "ANAT GSM")
+            project_id = confirm_project_alias(
+                database, "ANAT GSM", "DEPOT GSM", source_reference="explicit local mapping decision",
+            )
+            after = resolve_project_alias(database, "ANAT GSM")
+
+            self.assertIsNone(before["project_id"])
+            self.assertEqual(before["canonical_label"], "ANAT GSM")
+            self.assertFalse(before["explicit"])
+            self.assertEqual(after["project_id"], project_id)
+            self.assertEqual(after["canonical_label"], "DEPOT GSM")
+            self.assertTrue(after["explicit"])
 
 
 if __name__ == "__main__":
