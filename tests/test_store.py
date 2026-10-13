@@ -66,7 +66,7 @@ class WorkbookStoreTests(unittest.TestCase):
             initialize_store(database)
             initialize_store(database)
 
-            self.assertEqual(scalar(database, "SELECT MAX(version) FROM schema_version"), 3)
+            self.assertEqual(scalar(database, "SELECT MAX(version) FROM schema_version"), 4)
             with sqlite3.connect(database) as connection:
                 tables = {row[0] for row in connection.execute(
                     "SELECT name FROM sqlite_master WHERE type='table'"
@@ -213,7 +213,7 @@ class WorkbookStoreTests(unittest.TestCase):
 
             initialize_store(database)
 
-            self.assertEqual(scalar(database, "SELECT MAX(version) FROM schema_version"), 3)
+            self.assertEqual(scalar(database, "SELECT MAX(version) FROM schema_version"), 4)
             with sqlite3.connect(database) as connection:
                 tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             self.assertIn("template_mappings", tables)
@@ -342,14 +342,18 @@ class WorkbookStoreTests(unittest.TestCase):
             self.assertEqual(row_count, 1)
             snapshot_id = scalar(database, "SELECT snapshot_id FROM report_snapshots")
             with sqlite3.connect(database) as connection:
-                status, template_id, count = connection.execute(
-                    "SELECT mapping_status, template_id, row_count FROM report_snapshots WHERE snapshot_id=?",
+                status, template_id, version, source_reference, count = connection.execute(
+                    "SELECT mapping_status, template_id, mapping_version, mapping_source_reference, row_count "
+                    "FROM report_snapshots WHERE snapshot_id=?",
                     (snapshot_id,),
                 ).fetchone()
                 project, role = connection.execute(
                     "SELECT project_label, role_label FROM report_rows WHERE snapshot_id=?", (snapshot_id,)
                 ).fetchone()
-            self.assertEqual((status, template_id, count), ("confirmed", "manual-flat", 1))
+            self.assertEqual(
+                (status, template_id, version, source_reference, count),
+                ("confirmed", "manual-flat", "1", "PM confirmed column map", 1),
+            )
             self.assertEqual((project, role), ("Project A", "PTSP"))
 
 

@@ -16,7 +16,6 @@ from .store import (
     import_workbook,
     list_project_aliases,
     list_snapshots,
-    save_template_mapping,
 )
 
 MAX_UPLOAD_BYTES = 32 * 1024 * 1024
@@ -92,13 +91,10 @@ def confirm_mapping(
     sheet = next((item for item in preview.sheets if item["sheet"] == sheet_name), None)
     if sheet is None or sheet["mapping_status"] != "confirmed" or preview.validation["errors"]:
         raise ValueError("The explicit sheet mapping did not validate")
-    save_template_mapping(
-        settings.database_path, mapping["template_id"], mapping["version"], mapping,
-        source_reference=source_reference,
-    )
     return apply_template_mapping(
         settings.database_path, settings.storage_dir, workbook_id, sheet_name,
-        mapping["template_id"], mapping["version"],
+        mapping["template_id"], mapping["version"], mapping,
+        source_reference=source_reference,
     )
 
 

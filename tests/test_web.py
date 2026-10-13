@@ -7,8 +7,14 @@ from pathlib import Path
 import httpx
 from openpyxl import Workbook
 
-from wkly_rp_qc_v2.store import get_snapshot, resolve_project_alias
+from wkly_rp_qc_v2.store import (
+    create_job,
+    get_snapshot,
+    get_template_mapping,
+    resolve_project_alias,
+)
 from wkly_rp_qc_v2.web import WebSettings, create_app
+from wkly_rp_qc_v2.web_service import confirm_mapping
 
 
 def workbook_bytes(*, unknown: bool = False, project: str = "SMART PARKING") -> bytes:
@@ -139,6 +145,8 @@ class WebAppTests(unittest.TestCase):
             self.assertEqual(mapped.status_code, 303)
             preview = client.get(mapped.headers["location"])
             self.assertIn("confirmed", preview.text)
+            self.assertIn("manual-flat@1", preview.text)
+            self.assertIn("PM column mapping", preview.text)
             snapshot = get_snapshot(Path(temp) / "app.sqlite3", 1)
             self.assertEqual(snapshot["mapping_status"], "confirmed")
             self.assertEqual(snapshot["rows"][0]["project_label"], "SMART PARKING")
@@ -191,6 +199,37 @@ class WebAppTests(unittest.TestCase):
             self.assertIn("No previous-week plans", unaliased.text)
             self.assertIn("Previous rows: 1", aliased.text)
             self.assertIn("ANAT GSM", aliased.text)
+
+    def test_mapping_decision_is_not_saved_if_analysis_already_uses_snapshot(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            settings = WebSettings(root / "store.sqlite3", root / "storage", ())
+            app = create_app(settings)
+            with ASGITestClient(app) as client:
+                response = self.upload(client, workbook_bytes(unknown=True), "unknown.xlsx")
+            workbook_id = int(response.headers["location"].rsplit("/", 1)[1])
+            database = settings.database_path
+            with sqlite3.connect(database) as connection:
+                current_id = connection.execute(
+                    "INSERT INTO report_snapshots(workbook_id, sheet_name, sheet_index, template_id, "
+                    "mapping_status, sheet_state, reporting_period_json, mapping_json, warnings_json, row_count) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (workbook_id, "current", 1, "early", "recognized", "not_assessed", "{}", "{}", "[]", 0),
+                ).lastrowid
+            create_job(
+                database, workbook_id=workbook_id, previous_snapshot_id=1, current_snapshot_id=current_id,
+                project_label="SMART PARKING", role="PTSP", mode="replay", replay_bundle_id="bundle-1",
+            )
+            mapping = {
+                "mode": "flat", "template_id": "manual-flat", "version": "2",
+                "header_row": 1, "first_data_row": 2,
+                "columns": {"project": 1, "role": 2, "pic": 3, "actual": 4, "next_plan": 5, "issue_risk": 6},
+            }
+
+            with self.assertRaisesRegex(ValueError, "after an analysis job"):
+                confirm_mapping(settings, workbook_id, "Unknown Layout", mapping, "explicit remapping test")
+
+            self.assertIsNone(get_template_mapping(database, "manual-flat", "2"))
 
 
 if __name__ == "__main__":

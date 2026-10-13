@@ -57,7 +57,7 @@ class WebJobStoreTests(unittest.TestCase):
             self.assertEqual(job["previous_snapshot_id"], previous_id)
             self.assertEqual(job["current_snapshot_id"], current_id)
             self.assertEqual(job["replay_bundle_id"], "replay-1")
-            self.assertEqual(scalar(database, "SELECT MAX(version) FROM schema_version"), 3)
+            self.assertEqual(scalar(database, "SELECT MAX(version) FROM schema_version"), 4)
 
     def test_job_state_transitions_and_completed_result_metadata(self):
         with tempfile.TemporaryDirectory() as temp:

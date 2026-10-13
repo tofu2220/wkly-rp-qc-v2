@@ -145,6 +145,12 @@ def initialize_store(database_path: Path) -> None:
             )
         """)
         connection.execute("INSERT OR IGNORE INTO schema_version(version) VALUES (3)")
+        snapshot_columns = {row[1] for row in connection.execute("PRAGMA table_info(report_snapshots)")}
+        if "mapping_version" not in snapshot_columns:
+            connection.execute("ALTER TABLE report_snapshots ADD COLUMN mapping_version TEXT")
+        if "mapping_source_reference" not in snapshot_columns:
+            connection.execute("ALTER TABLE report_snapshots ADD COLUMN mapping_source_reference TEXT")
+        connection.execute("INSERT OR IGNORE INTO schema_version(version) VALUES (4)")
 
 
 def _json(value: object) -> str:
@@ -299,6 +305,8 @@ def _decode_snapshot(row: sqlite3.Row) -> JsonDict:
         "sheet_index": row["sheet_index"],
         "template_id": row["template_id"],
         "mapping_status": row["mapping_status"],
+        "mapping_version": row["mapping_version"],
+        "mapping_source_reference": row["mapping_source_reference"],
         "sheet_state": row["sheet_state"],
         "reporting_period": period,
         "chronology_status": chronology,
@@ -512,10 +520,22 @@ def apply_template_mapping(
     sheet_name: str,
     template_id: str,
     version: str,
+    mapping: JsonDict | None = None,
+    *,
+    source_reference: str | None = None,
 ) -> int:
-    mapping_record = get_template_mapping(database_path, template_id, version)
-    if mapping_record is None:
-        raise ValueError(f"Unknown template mapping: {template_id}@{version}")
+    if mapping is None:
+        mapping_record = get_template_mapping(database_path, template_id, version)
+        if mapping_record is None:
+            raise ValueError(f"Unknown template mapping: {template_id}@{version}")
+        mapping = mapping_record["mapping"]
+        mapping_source_reference = mapping_record["source_reference"]
+    else:
+        if mapping.get("template_id") != template_id or mapping.get("version") != version:
+            raise ValueError("Manual mapping identity must match template_id and version")
+        if not source_reference or not source_reference.strip():
+            raise ValueError("Manual mapping requires a source reference")
+        mapping_source_reference = source_reference
     with _connect(Path(database_path)) as connection:
         workbook = connection.execute(
             "SELECT sha256, storage_relpath FROM workbook_versions WHERE workbook_id=?", (workbook_id,)
@@ -542,7 +562,7 @@ def apply_template_mapping(
     if hashlib.sha256(workbook_path.read_bytes()).hexdigest() != workbook[0]:
         raise ValueError("Stored workbook hash mismatch")
 
-    preview = inspect_workbook(workbook_path, mapping_overrides={sheet_name: mapping_record["mapping"]})
+    preview = inspect_workbook(workbook_path, mapping_overrides={sheet_name: mapping})
     sheet_record = next(sheet for sheet in preview.sheets if sheet["sheet"] == sheet_name)
     if sheet_record["mapping_status"] != "confirmed":
         raise ValueError("Explicit mapping did not resolve the selected sheet")
@@ -556,13 +576,21 @@ def apply_template_mapping(
             (snapshot_id, snapshot_id),
         ).fetchone():
             raise ValueError("Cannot change a sheet mapping after an analysis job has used the snapshot")
+        if source_reference is not None:
+            connection.execute(
+                "INSERT INTO template_mappings(template_id, version, mapping_json, source_reference, saved_at_utc) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (template_id, version, _json(mapping), source_reference, datetime.now(UTC).isoformat()),
+            )
         connection.execute("DELETE FROM report_rows WHERE snapshot_id=?", (snapshot_id,))
         connection.execute(
-            "UPDATE report_snapshots SET template_id=?, mapping_status=?, sheet_state=?, reporting_period_json=?, "
-            "mapping_json=?, warnings_json=?, row_count=? WHERE snapshot_id=?",
+            "UPDATE report_snapshots SET template_id=?, mapping_version=?, mapping_source_reference=?, "
+            "mapping_status=?, sheet_state=?, reporting_period_json=?, mapping_json=?, warnings_json=?, "
+            "row_count=? WHERE snapshot_id=?",
             (
-                template_id, "confirmed", sheet_record["sheet_state"], _json(sheet_record["reporting_period"]),
-                _json(sheet_record["fields"]), _json(sheet_record["ambiguities"]), len(rows), snapshot_id,
+                template_id, version, mapping_source_reference, "confirmed", sheet_record["sheet_state"],
+                _json(sheet_record["reporting_period"]), _json(sheet_record["fields"]),
+                _json(sheet_record["ambiguities"]), len(rows), snapshot_id,
             ),
         )
         connection.executemany(
