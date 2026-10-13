@@ -6,15 +6,18 @@ import unittest
 from pathlib import Path
 from zipfile import BadZipFile
 
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 
 from wkly_rp_qc_v2.store import (
+    apply_template_mapping,
     confirm_project_alias,
     find_source_conflicts,
+    get_original_workbook_path,
     get_snapshot,
     get_template_mapping,
     import_workbook,
     initialize_store,
+    list_project_aliases,
     list_snapshots,
     resolve_project_alias,
     save_template_mapping,
@@ -109,6 +112,22 @@ class WorkbookStoreTests(unittest.TestCase):
             self.assertEqual(state, "not_assessed")
             self.assertEqual(json.loads(refs)["actual"], "C6")
             self.assertEqual(json.loads(provenance)["actual"]["source_cell"], "C6")
+
+    def test_original_workbook_path_is_hash_checked_and_confined_to_storage(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "sample.xlsx"
+            database, storage = root / "store.sqlite3", root / "files"
+            make_workbook(source)
+            result = import_workbook(source, database, storage)
+
+            stored = get_original_workbook_path(database, storage, result.workbook_id)
+
+            self.assertEqual(stored.read_bytes(), source.read_bytes())
+            with sqlite3.connect(database) as connection:
+                connection.execute("UPDATE workbook_versions SET storage_relpath=?", ("../../outside.xlsx",))
+            with self.assertRaisesRegex(ValueError, "escapes"):
+                get_original_workbook_path(database, storage, result.workbook_id)
 
     def test_exact_duplicate_hash_returns_existing_version_without_duplicate_rows(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -290,6 +309,48 @@ class WorkbookStoreTests(unittest.TestCase):
             self.assertEqual(after["project_id"], project_id)
             self.assertEqual(after["canonical_label"], "DEPOT GSM")
             self.assertTrue(after["explicit"])
+            self.assertEqual(list_project_aliases(database, "DEPOT GSM"), ["ANAT GSM"])
+            self.assertEqual(list_project_aliases(database, "ANAT VHR"), [])
+
+    def test_explicit_template_mapping_reprocesses_pending_sheet(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "unknown.xlsx"
+            database, storage = root / "store.sqlite3", root / "files"
+            make_workbook(source, unknown=True, period_name="Unknown Layout")
+            workbook = load_workbook(source)
+            sheet = workbook.active
+            sheet["B9"] = None
+            for column, value in enumerate(("Project", "Role", "PIC", "Actual", "Next Plan", "Issue/Risk"), start=1):
+                sheet.cell(1, column, value)
+            for column, value in enumerate(("Project A", "PTSP", "Owner", "Update", "Next step", None), start=1):
+                sheet.cell(2, column, value)
+            workbook.save(source)
+            workbook.close()
+            imported = import_workbook(source, database, storage)
+            mapping = {
+                "mode": "flat", "template_id": "manual-flat", "version": "1",
+                "header_row": 1, "first_data_row": 2,
+                "columns": {"project": 1, "role": 2, "pic": 3, "actual": 4, "next_plan": 5, "issue_risk": 6},
+            }
+            save_template_mapping(database, "manual-flat", "1", mapping, source_reference="PM confirmed column map")
+
+            row_count = apply_template_mapping(
+                database, storage, imported.workbook_id, "Unknown Layout", "manual-flat", "1",
+            )
+
+            self.assertEqual(row_count, 1)
+            snapshot_id = scalar(database, "SELECT snapshot_id FROM report_snapshots")
+            with sqlite3.connect(database) as connection:
+                status, template_id, count = connection.execute(
+                    "SELECT mapping_status, template_id, row_count FROM report_snapshots WHERE snapshot_id=?",
+                    (snapshot_id,),
+                ).fetchone()
+                project, role = connection.execute(
+                    "SELECT project_label, role_label FROM report_rows WHERE snapshot_id=?", (snapshot_id,)
+                ).fetchone()
+            self.assertEqual((status, template_id, count), ("confirmed", "manual-flat", 1))
+            self.assertEqual((project, role), ("Project A", "PTSP"))
 
 
 if __name__ == "__main__":

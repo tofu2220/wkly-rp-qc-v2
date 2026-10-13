@@ -136,6 +136,38 @@ class WorkbookImporterTests(unittest.TestCase):
             self.assertNotIn("reporting_year", payload["rows"][0])
             self.assertEqual(payload["rows"][0]["field_provenance"], preview.rows[0]["field_provenance"])
 
+    def test_manual_flat_mapping_preserves_empty_labels_without_forward_fill(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "manual.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.title = "Unrecognized report"
+            for column, value in enumerate(("Project", "Role", "PIC", "Actual", "Next Plan", "Issue/Risk"), start=1):
+                sheet.cell(1, column, value)
+            for column, value in enumerate(("Project A", "PTSP", "Owner", "Reported", "Deliver next", None), start=1):
+                sheet.cell(2, column, value)
+            for column, value in enumerate((None, None, None, "Continuation with no labels", None, None), start=1):
+                sheet.cell(3, column, value)
+            workbook.save(path)
+            workbook.close()
+            mapping = {
+                "mode": "flat", "template_id": "manual-flat", "version": "1",
+                "header_row": 1, "first_data_row": 2,
+                "columns": {"project": 1, "role": 2, "pic": 3, "actual": 4, "next_plan": 5, "issue_risk": 6},
+            }
+
+            preview = inspect_workbook(path, mapping_overrides={"Unrecognized report": mapping})
+
+            self.assertEqual(preview.sheets[0]["mapping_status"], "confirmed")
+            self.assertEqual(preview.sheets[0]["template"], "manual-flat")
+            self.assertEqual(len(preview.rows), 2)
+            self.assertEqual(preview.rows[0]["source_refs"]["actual"], "D2")
+            self.assertEqual(preview.rows[1]["project"], None)
+            self.assertEqual(preview.rows[1]["role"], None)
+            self.assertEqual(preview.rows[1]["source_refs"]["project"], "A3")
+            self.assertIn("manual_mapping_missing_project_label", preview.rows[1]["review_flags"])
+            self.assertEqual(preview.validation["status"], "PASS")
+
     def test_inspect_workbook_preserves_original_whitespace_and_multiline_text(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "exact-text.xlsx"

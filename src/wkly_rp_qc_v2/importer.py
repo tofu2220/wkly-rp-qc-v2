@@ -224,6 +224,90 @@ def _header_mapping(sheet, config, merges) -> JsonDict:
     return mapping
 
 
+def _manual_mapping(sheet, mapping: JsonDict) -> tuple[JsonDict, JsonDict]:
+    if set(mapping) != {"mode", "template_id", "version", "header_row", "first_data_row", "columns"} or mapping["mode"] != "flat":
+        raise ValueError("Invalid manual flat mapping fields")
+    if not isinstance(mapping["template_id"], str) or not mapping["template_id"].strip():
+        raise ValueError("Manual mapping template_id must be nonempty")
+    if not isinstance(mapping["version"], str) or not mapping["version"].strip():
+        raise ValueError("Manual mapping version must be nonempty")
+    header_row, first_data_row = mapping["header_row"], mapping["first_data_row"]
+    if (type(header_row) is not int or type(first_data_row) is not int
+            or header_row < 1 or first_data_row <= header_row or first_data_row > sheet.max_row + 1):
+        raise ValueError("Manual mapping requires valid header_row and first_data_row")
+    columns = mapping["columns"]
+    if not isinstance(columns, dict) or set(columns) != set(FIELDS):
+        raise ValueError("Manual mapping columns must define all six normalized fields")
+    for field, column in columns.items():
+        if field in ("project", "role") and column is None:
+            raise ValueError(f"Manual mapping requires a {field} column")
+        if column is not None and (type(column) is not int or not 1 <= column <= sheet.max_column):
+            raise ValueError(f"Invalid manual mapping column for {field}")
+    if not any(columns[field] is not None for field in ("actual", "next_plan", "issue_risk")):
+        raise ValueError("Manual mapping requires at least one narrative column")
+
+    config = {
+        "name": "manual_flat", "template_id": mapping["template_id"], "version": mapping["version"],
+        "header_row": header_row, "first_data_row": first_data_row, "columns": columns,
+        "actual_col": columns.get("actual") or columns.get("next_plan") or columns.get("issue_risk") or columns["project"],
+    }
+    fields = {}
+    for field, column in columns.items():
+        if column is None:
+            fields[field] = {
+                "status": "unmapped", "column_letter": None, "additional_columns": [],
+                "original_header_text": None, "header_cell_address": None,
+                "header_merged_range": None, "first_data_row": first_data_row,
+            }
+        else:
+            address = f"{get_column_letter(column)}{header_row}"
+            fields[field] = {
+                "status": "user_mapped", "column_letter": get_column_letter(column), "additional_columns": [],
+                "original_header_text": _value_at(sheet, header_row, column),
+                "header_cell_address": address, "header_merged_range": None,
+                "first_data_row": first_data_row,
+            }
+    return config, fields
+
+
+def _manual_flat_rows(sheet, config) -> tuple[list[JsonDict], list[JsonDict]]:
+    rows, excluded = [], [
+        {"row": row, "reason": "header_or_title"} for row in range(1, config["first_data_row"])
+    ]
+    for row in range(config["first_data_row"], sheet.max_row + 1):
+        fields, values, source_refs = {}, {}, {}
+        for field, column in config["columns"].items():
+            if column is None:
+                fields[field] = {
+                    "source_cell": None, "original_value": None, "resolved_value": None,
+                    "original_value_kind": "null", "anchor_cell": None, "anchor_original_value": None,
+                    "merged_range": None, "resolution": "unmapped",
+                }
+                values[field] = None
+                source_refs[field] = None
+            else:
+                item = _field_from_cell(sheet, row, column, {})
+                fields[field] = item
+                values[field] = item["resolved_value"]
+                source_refs[field] = item["source_cell"]
+        if not any(_meaningful(value) for value in values.values()):
+            excluded.append({"row": row, "reason": "unlabelled_empty_data_candidate"})
+            continue
+        review = []
+        if not _meaningful(values["project"]):
+            review.append("manual_mapping_missing_project_label")
+        if not _meaningful(values["role"]):
+            review.append("manual_mapping_missing_role_label")
+        has_narrative = any(_meaningful(values[field]) for field in ("actual", "next_plan", "issue_risk"))
+        if not has_narrative and not _meaningful(values["pic"]):
+            review.append("draft_role_row_no_report_values")
+        rows.append({
+            "sheet": sheet.title, "source_row": row, **values, "source_refs": source_refs,
+            "field_provenance": fields, "subgroup": [], "review_flags": review,
+        })
+    return rows, excluded
+
+
 def _number_code(raw: Any) -> str | None:
     if raw is None:
         return None
@@ -436,6 +520,8 @@ def _validate_extraction(workbook, sheet_records: list[JsonDict], rows: list[Jso
         nonempty = [cell for line in sheet for cell in line if not isinstance(cell, MergedCell) and cell.value is not None]
         counts["raw_cells_verified"] += len(nonempty)
         for field, mapped in record["fields"].items():
+            if mapped["header_cell_address"] is None:
+                continue
             if sheet[mapped["header_cell_address"]].value != mapped["original_header_text"]:
                 errors.append(f"Header mapping mismatch: {sheet.title} {field}")
             else:
@@ -443,6 +529,8 @@ def _validate_extraction(workbook, sheet_records: list[JsonDict], rows: list[Jso
         for row in rows_by_sheet.get(sheet.title, []):
             for field in FIELDS:
                 provenance = row["field_provenance"][field]
+                if provenance["resolution"] == "unmapped":
+                    continue
                 raw_cell = sheet[provenance["source_cell"]]
                 raw_value = _serializable(raw_cell.value if not isinstance(raw_cell, MergedCell) else None)[0]
                 if (raw_value != provenance["original_value"]
@@ -463,13 +551,48 @@ def _validate_extraction(workbook, sheet_records: list[JsonDict], rows: list[Jso
     return {"status": status, "counts": dict(counts), "errors": errors}
 
 
-def inspect_workbook(path: Path) -> WorkbookImportPreview:
+def inspect_workbook(
+    path: Path, *, mapping_overrides: dict[str, JsonDict] | None = None
+) -> WorkbookImportPreview:
     path = Path(path)
     workbook_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
     workbook = load_workbook(path, data_only=False, read_only=False)
     sheets, rows, excluded_rows = [], [], {}
+    overrides = mapping_overrides or {}
+    applied_overrides = set()
     try:
         for index, sheet in enumerate(workbook.worksheets):
+            override = overrides.get(sheet.title)
+            if override is not None:
+                config, fields = _manual_mapping(sheet, override)
+                period = _period_of(sheet, config)
+                sheet_rows, exclusions = _manual_flat_rows(sheet, config)
+                state = ("draft_or_incomplete" if sheet_rows and not any(
+                    _meaningful(item[field]) for item in sheet_rows for field in ("actual", "next_plan", "issue_risk")
+                ) else "not_assessed")
+                for row in sheet_rows:
+                    row["reporting_period"] = period["label"]
+                    row["reporting_year"] = period["year"]
+                rows.extend(sheet_rows)
+                excluded_rows[sheet.title] = exclusions
+                sheets.append({
+                    "sheet_index": index,
+                    "sheet": sheet.title,
+                    "template": config["template_id"],
+                    "mapping_status": "confirmed",
+                    "mapping_version": config["version"],
+                    "header_rows": [config["header_row"]],
+                    "column_header_row": config["header_row"],
+                    "first_data_row": config["first_data_row"],
+                    "sheet_state": state,
+                    "reporting_period": period,
+                    "fields": fields,
+                    "ambiguities": ["Explicit flat mapping; blank project/role labels are not inferred"],
+                    "normalized_row_count": len(sheet_rows),
+                    "user_mapping": override,
+                })
+                applied_overrides.add(sheet.title)
+                continue
             config = _get_template(sheet)
             if config is None:
                 sheets.append({
@@ -508,6 +631,9 @@ def inspect_workbook(path: Path) -> WorkbookImportPreview:
                 "sheet_state": state, "reporting_period": period, "fields": fields,
                 "ambiguities": ambiguities, "normalized_row_count": len(sheet_rows),
             })
+        unknown_overrides = set(overrides) - applied_overrides
+        if unknown_overrides:
+            raise ValueError(f"Manual mapping references unknown sheets: {sorted(unknown_overrides)}")
         validation = _validate_extraction(workbook, sheets, rows)
     finally:
         workbook.close()

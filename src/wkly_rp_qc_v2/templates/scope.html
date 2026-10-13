@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Analysis scope · Weekly Report QC{% endblock %}
+{% block content %}
+  <p class="eyebrow"><a href="/">Workbooks</a> / scope</p>
+  <h1>Chọn phạm vi</h1>
+  <form action="/scope" method="get" class="mapping-grid scope-form">
+    <label>Kỳ trước<select name="previous_snapshot_id" required><option value="">Chọn snapshot</option>{% for item in snapshots %}<option value="{{ item.snapshot_id }}" {% if selected.previous == item.snapshot_id %}selected{% endif %}>{{ item.sheet_name }} · {{ item.original_filename }}</option>{% endfor %}</select></label>
+    <label>Kỳ hiện tại<select name="current_snapshot_id" required><option value="">Chọn snapshot</option>{% for item in snapshots %}<option value="{{ item.snapshot_id }}" {% if selected.current == item.snapshot_id %}selected{% endif %}>{{ item.sheet_name }} · {{ item.original_filename }}</option>{% endfor %}</select></label>
+    <label>Project label<select name="project" required><option value="">Chọn Project</option>{% for item in projects %}<option {% if selected.project == item %}selected{% endif %}>{{ item }}</option>{% endfor %}</select></label>
+    <label>Role<select name="role" required><option value="">Chọn Role</option>{% for item in roles %}<option {% if selected.role == item %}selected{% endif %}>{{ item }}</option>{% endfor %}</select></label>
+    <label class="wide">Confirmed aliases<select name="aliases" multiple size="3">{% for item in available_aliases %}<option value="{{ item }}" {% if item in selected.aliases %}selected{% endif %}>{{ item }}</option>{% endfor %}</select><span class="hint">Chỉ alias đã được xác nhận mới có thể mở rộng phạm vi.</span></label>
+    <button class="wide" type="submit">Preview phạm vi</button>
+  </form>
+  {% if error %}<div class="notice notice-warning" role="alert">{{ error }}</div>{% endif %}
+  {% if prepared %}
+    <section class="panel"><h2>Evidence coverage</h2>
+      <p>Previous rows: {{ prepared.scope.previous_rows | length }} · Current rows: {{ prepared.scope.current_rows | length }} · Sources: {{ prepared.sources | length }}</p>
+      <p>Periods: {{ prepared.scope.previous_sheet }} → {{ prepared.scope.current_sheet }}</p>
+      {% if prepared.scope.selection_warnings %}<ul class="warnings">{% for warning in prepared.scope.selection_warnings %}<li>{{ warning }}</li>{% endfor %}</ul>{% endif %}
+      <div class="notice notice-info">Chưa chạy phân tích. Chế độ replay chỉ bật nếu tìm được response có hash và phạm vi trùng khớp.</div>
+    </section>
+  {% endif %}
+{% endblock %}

@@ -262,6 +262,24 @@ def import_workbook(workbook_path: Path, database_path: Path, storage_dir: Path)
     return _persist_preview(preview, workbook_path, database_path, storage_dir, sha256)
 
 
+def get_original_workbook_path(database_path: Path, storage_dir: Path, workbook_id: int) -> Path:
+    with _connect(Path(database_path)) as connection:
+        row = connection.execute(
+            "SELECT sha256, storage_relpath FROM workbook_versions WHERE workbook_id=?", (workbook_id,)
+        ).fetchone()
+    if row is None:
+        raise ValueError(f"Unknown workbook ID: {workbook_id}")
+    storage_root = Path(storage_dir).resolve()
+    workbook_path = (storage_root / row[1]).resolve()
+    if storage_root not in workbook_path.parents:
+        raise ValueError("Stored workbook path escapes the storage directory")
+    if not workbook_path.is_file():
+        raise FileNotFoundError(workbook_path)
+    if hashlib.sha256(workbook_path.read_bytes()).hexdigest() != row[0]:
+        raise ValueError("Stored workbook hash mismatch")
+    return workbook_path
+
+
 def _decode_snapshot(row: sqlite3.Row) -> JsonDict:
     period = json.loads(row["reporting_period_json"]) if row["reporting_period_json"] else None
     if period is None or period.get("status") == "unknown":
@@ -475,6 +493,90 @@ def resolve_project_alias(database_path: Path, raw_label: str) -> JsonDict:
         "canonical_label": row[1] if row else raw_label,
         "explicit": row is not None,
     }
+
+
+def list_project_aliases(database_path: Path, canonical_label: str) -> list[str]:
+    with _connect(Path(database_path)) as connection:
+        rows = connection.execute(
+            "SELECT a.raw_label FROM project_aliases a JOIN project_identities p USING(project_id) "
+            "WHERE p.canonical_label=? ORDER BY a.raw_label",
+            (canonical_label,),
+        ).fetchall()
+    return [row[0] for row in rows]
+
+
+def apply_template_mapping(
+    database_path: Path,
+    storage_dir: Path,
+    workbook_id: int,
+    sheet_name: str,
+    template_id: str,
+    version: str,
+) -> int:
+    mapping_record = get_template_mapping(database_path, template_id, version)
+    if mapping_record is None:
+        raise ValueError(f"Unknown template mapping: {template_id}@{version}")
+    with _connect(Path(database_path)) as connection:
+        workbook = connection.execute(
+            "SELECT sha256, storage_relpath FROM workbook_versions WHERE workbook_id=?", (workbook_id,)
+        ).fetchone()
+        if workbook is None:
+            raise ValueError(f"Unknown workbook ID: {workbook_id}")
+        snapshot = connection.execute(
+            "SELECT snapshot_id FROM report_snapshots WHERE workbook_id=? AND sheet_name=?",
+            (workbook_id, sheet_name),
+        ).fetchone()
+        if snapshot is None:
+            raise ValueError(f"Unknown workbook sheet: {sheet_name}")
+        snapshot_id = snapshot[0]
+        if connection.execute(
+            "SELECT 1 FROM analysis_jobs WHERE previous_snapshot_id=? OR current_snapshot_id=? LIMIT 1",
+            (snapshot_id, snapshot_id),
+        ).fetchone():
+            raise ValueError("Cannot change a sheet mapping after an analysis job has used the snapshot")
+
+    storage_root = Path(storage_dir).resolve()
+    workbook_path = (storage_root / workbook[1]).resolve()
+    if storage_root not in workbook_path.parents:
+        raise ValueError("Stored workbook path escapes the storage directory")
+    if hashlib.sha256(workbook_path.read_bytes()).hexdigest() != workbook[0]:
+        raise ValueError("Stored workbook hash mismatch")
+
+    preview = inspect_workbook(workbook_path, mapping_overrides={sheet_name: mapping_record["mapping"]})
+    sheet_record = next(sheet for sheet in preview.sheets if sheet["sheet"] == sheet_name)
+    if sheet_record["mapping_status"] != "confirmed":
+        raise ValueError("Explicit mapping did not resolve the selected sheet")
+    rows = [row for row in preview.rows if row["sheet"] == sheet_name]
+    if preview.validation["status"] == "FAIL":
+        raise ValueError("Mapped workbook validation failed: " + "; ".join(preview.validation["errors"]))
+
+    with _connect(Path(database_path)) as connection:
+        if connection.execute(
+            "SELECT 1 FROM analysis_jobs WHERE previous_snapshot_id=? OR current_snapshot_id=? LIMIT 1",
+            (snapshot_id, snapshot_id),
+        ).fetchone():
+            raise ValueError("Cannot change a sheet mapping after an analysis job has used the snapshot")
+        connection.execute("DELETE FROM report_rows WHERE snapshot_id=?", (snapshot_id,))
+        connection.execute(
+            "UPDATE report_snapshots SET template_id=?, mapping_status=?, sheet_state=?, reporting_period_json=?, "
+            "mapping_json=?, warnings_json=?, row_count=? WHERE snapshot_id=?",
+            (
+                template_id, "confirmed", sheet_record["sheet_state"], _json(sheet_record["reporting_period"]),
+                _json(sheet_record["fields"]), _json(sheet_record["ambiguities"]), len(rows), snapshot_id,
+            ),
+        )
+        connection.executemany(
+            "INSERT INTO report_rows(snapshot_id, source_row, reporting_period, reporting_year, "
+            "project_label, role_label, pic, actual, next_plan, issue_risk, source_refs_json, "
+            "field_provenance_json, subgroup_json, review_flags_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [(
+                snapshot_id, row["source_row"], row.get("reporting_period"), row.get("reporting_year"),
+                row["project"], row["role"], row["pic"], row["actual"], row["next_plan"], row["issue_risk"],
+                _json(row["source_refs"]), _json(row["field_provenance"]), _json(row["subgroup"]),
+                _json(row["review_flags"]),
+            ) for row in rows],
+        )
+    return len(rows)
 
 
 def create_job(

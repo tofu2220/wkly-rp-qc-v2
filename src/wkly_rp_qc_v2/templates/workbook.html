@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}Import preview · Weekly Report QC{% endblock %}
+{% block content %}
+  <p class="eyebrow"><a href="/">Workbooks</a> / import preview</p>
+  <h1>{{ workbook.original_filename }}</h1>
+  <p class="hint">SHA-256 <code>{{ workbook.sha256 }}</code></p>
+  <p class="hint">Khi kiểm tra xong mapping và kỳ báo cáo, tiếp tục chọn phạm vi. Chưa có phân tích nào được chạy.</p>
+  {% for sheet in workbook.sheets %}
+    <section class="panel sheet-panel">
+      <div class="section-heading">
+        <div><p class="eyebrow">Sheet {{ sheet.sheet_index + 1 }}</p><h2>{{ sheet.sheet_name }}</h2></div>
+        <span class="status status-{{ sheet.mapping_status }}">{{ sheet.mapping_status }}</span>
+      </div>
+      <dl class="facts">
+        <div><dt>Template</dt><dd>{{ sheet.template_id or "chưa xác định" }}</dd></div>
+        <div><dt>Trạng thái</dt><dd>{{ sheet.sheet_state }}</dd></div>
+        <div><dt>Số dòng</dt><dd>{{ sheet.row_count }}</dd></div>
+        <div><dt>Kỳ</dt><dd>{{ (sheet.reporting_period or {}).get("label") or "chưa xác định" }}</dd></div>
+      </dl>
+      {% if sheet.warnings %}<ul class="warnings">{% for warning in sheet.warnings %}<li>{{ warning }}</li>{% endfor %}</ul>{% endif %}
+      {% if sheet.rows %}
+      <details open>
+        <summary>Source rows and evidence locations</summary>
+        <div class="table-wrap"><table><thead><tr><th>Row</th><th>Project</th><th>Role</th><th>PIC</th><th>Actual</th><th>Next Plan</th><th>Issue/Risk</th></tr></thead><tbody>
+        {% for row in sheet.rows %}
+          <tr>
+            <td>{{ row.source_row }}</td>
+            {% for field in ("project_label", "role_label", "pic", "actual", "next_plan", "issue_risk") %}
+              {% set source_field = {"project_label":"project", "role_label":"role"}.get(field, field) %}
+              <td><span class="source-value">{{ row[field] if row[field] is not none else "—" }}</span><br><code class="source-ref">{{ row.source_refs.get(source_field) or "—" }}</code></td>
+            {% endfor %}
+          </tr>
+        {% endfor %}
+        </tbody></table></div>
+      </details>
+      {% endif %}
+      {% if sheet.mapping_status == "mapping_required" %}
+      {% if sheet.cell_preview %}
+      <details open>
+        <summary>Raw layout preview (source cells)</summary>
+        <div class="table-wrap"><table><thead><tr><th>Row</th>{% for cell in sheet.cell_preview[0].cells %}<th>{{ cell.column }}</th>{% endfor %}</tr></thead><tbody>
+        {% for row in sheet.cell_preview %}<tr><th>{{ row.row }}</th>{% for cell in row.cells %}<td><code>{{ cell.address }}</code><br>{{ cell.value if cell.value is not none else "—" }}{% if cell.truncated %}<span class="hint">(preview shortened)</span>{% endif %}</td>{% endfor %}</tr>{% endfor %}
+        </tbody></table></div>
+      </details>
+      {% endif %}
+      <details class="mapping-form">
+        <summary>Save mapping</summary>
+        <p class="hint">Map từng cột rõ ràng. Các dòng thiếu Project/Role vẫn giữ null; không tự điền.</p>
+        <form action="/workbooks/{{ workbook.workbook_id }}/sheets/{{ sheet.sheet_name }}/mapping" method="post" class="mapping-grid">
+          <label>Template ID<input name="template_id" value="manual-flat" required></label>
+          <label>Version<input name="version" value="1" required></label>
+          <label>Header row<input name="header_row" type="number" min="1" value="1" required></label>
+          <label>First data row<input name="first_data_row" type="number" min="2" value="2" required></label>
+          <label>Project column<input name="project_col" type="number" min="1" required></label>
+          <label>Role column<input name="role_col" type="number" min="1" required></label>
+          <label>PIC column<input name="pic_col" type="number" min="1"></label>
+          <label>Actual column<input name="actual_col" type="number" min="1"></label>
+          <label>Next Plan column<input name="next_plan_col" type="number" min="1"></label>
+          <label>Issue/Risk column<input name="issue_risk_col" type="number" min="1"></label>
+          <label class="wide">Mapping source / reason<input name="source_reference" required></label>
+          <button class="wide" type="submit">Apply and reprocess this sheet</button>
+        </form>
+      </details>
+      {% else %}
+      <details><summary>Mapping preview</summary>
+        <div class="table-wrap"><table><thead><tr><th>Field</th><th>Header cell</th><th>Source header</th><th>Mapping</th></tr></thead><tbody>
+        {% for field, mapping in sheet.mapping.items() %}<tr><td>{{ field }}</td><td>{{ mapping.header_cell_address or "—" }}</td><td>{{ mapping.original_header_text or "—" }}</td><td>{{ mapping.status }}</td></tr>{% endfor %}
+        </tbody></table></div>
+      </details>
+      {% endif %}
+    </section>
+  {% endfor %}
+
+  <section class="panel">
+    <h2>Explicit project alias</h2>
+    <p class="hint">Alias chỉ được dùng sau khi bạn xác nhận. Nhãn nguồn vẫn được giữ nguyên.</p>
+    <form action="/workbooks/{{ workbook.workbook_id }}/aliases" method="post" class="mapping-grid">
+      <label>Raw label<input name="raw_label" required></label>
+      <label>Canonical label<input name="canonical_label" required></label>
+      <label class="wide">Decision source<input name="source_reference" required></label>
+      <button class="wide" type="submit">Confirm alias</button>
+    </form>
+  </section>
+{% endblock %}
