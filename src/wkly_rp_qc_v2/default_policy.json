@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "version": "demo-policy-v1",
+  "rules": [
+    {"rule_id": "identity_uncertain", "model_label": "Identity Uncertain", "version": "1"},
+    {"rule_id": "status_ambiguous", "model_label": "Status Ambiguous", "version": "1"},
+    {"rule_id": "milestone_conflict", "model_label": "Milestone Conflict", "version": "1"},
+    {"rule_id": "closure_incomplete", "model_label": "Closure Incomplete", "version": "1"},
+    {"rule_id": "missing_closure", "model_label": "Missing Closure", "version": "1"}
+  ],
+  "decisions": []
+}
