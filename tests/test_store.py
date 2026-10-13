@@ -63,7 +63,7 @@ class WorkbookStoreTests(unittest.TestCase):
             initialize_store(database)
             initialize_store(database)
 
-            self.assertEqual(scalar(database, "SELECT MAX(version) FROM schema_version"), 2)
+            self.assertEqual(scalar(database, "SELECT MAX(version) FROM schema_version"), 3)
             with sqlite3.connect(database) as connection:
                 tables = {row[0] for row in connection.execute(
                     "SELECT name FROM sqlite_master WHERE type='table'"
@@ -194,11 +194,14 @@ class WorkbookStoreTests(unittest.TestCase):
 
             initialize_store(database)
 
-            self.assertEqual(scalar(database, "SELECT MAX(version) FROM schema_version"), 2)
+            self.assertEqual(scalar(database, "SELECT MAX(version) FROM schema_version"), 3)
             with sqlite3.connect(database) as connection:
                 tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             self.assertIn("template_mappings", tables)
             self.assertIn("project_aliases", tables)
+            self.assertIn("analysis_jobs", tables)
+            self.assertIn("job_results", tables)
+            self.assertIn("finding_reviews", tables)
 
     def test_snapshot_queries_keep_raw_source_addresses_and_workbook_version(self):
         with tempfile.TemporaryDirectory() as temp:

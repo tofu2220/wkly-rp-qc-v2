@@ -104,6 +104,47 @@ def initialize_store(database_path: Path) -> None:
             )
         """)
         connection.execute("INSERT OR IGNORE INTO schema_version(version) VALUES (2)")
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS analysis_jobs (
+                job_id INTEGER PRIMARY KEY,
+                workbook_id INTEGER NOT NULL REFERENCES workbook_versions(workbook_id),
+                previous_snapshot_id INTEGER NOT NULL REFERENCES report_snapshots(snapshot_id),
+                current_snapshot_id INTEGER NOT NULL REFERENCES report_snapshots(snapshot_id),
+                project_label TEXT NOT NULL,
+                role TEXT NOT NULL,
+                mode TEXT NOT NULL CHECK(mode='replay'),
+                replay_bundle_id TEXT,
+                status TEXT NOT NULL CHECK(status IN ('pending','running','interrupted','failed','no_ai_result','completed')),
+                progress INTEGER NOT NULL DEFAULT 0 CHECK(progress BETWEEN 0 AND 100),
+                coverage_json TEXT NOT NULL DEFAULT '{}',
+                error TEXT,
+                created_at_utc TEXT NOT NULL,
+                started_at_utc TEXT,
+                finished_at_utc TEXT,
+                CHECK(previous_snapshot_id != current_snapshot_id)
+            )
+        """)
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS job_results (
+                job_id INTEGER PRIMARY KEY REFERENCES analysis_jobs(job_id),
+                result_path TEXT NOT NULL,
+                result_sha256 TEXT NOT NULL,
+                metadata_json TEXT NOT NULL,
+                created_at_utc TEXT NOT NULL
+            )
+        """)
+        connection.execute("""
+            CREATE TABLE IF NOT EXISTS finding_reviews (
+                job_id INTEGER NOT NULL REFERENCES analysis_jobs(job_id),
+                plan_id TEXT NOT NULL,
+                finding_index INTEGER NOT NULL CHECK(finding_index >= 0),
+                state TEXT NOT NULL CHECK(state IN ('accepted','rejected','clarification_needed')),
+                note TEXT,
+                updated_at_utc TEXT NOT NULL,
+                PRIMARY KEY(job_id, plan_id, finding_index)
+            )
+        """)
+        connection.execute("INSERT OR IGNORE INTO schema_version(version) VALUES (3)")
 
 
 def _json(value: object) -> str:
@@ -434,3 +475,150 @@ def resolve_project_alias(database_path: Path, raw_label: str) -> JsonDict:
         "canonical_label": row[1] if row else raw_label,
         "explicit": row is not None,
     }
+
+
+def create_job(
+    database_path: Path,
+    *,
+    workbook_id: int,
+    previous_snapshot_id: int,
+    current_snapshot_id: int,
+    project_label: str,
+    role: str,
+    mode: str,
+    replay_bundle_id: str | None,
+) -> int:
+    if mode != "replay":
+        raise ValueError("Only offline replay jobs are enabled")
+    if not project_label.strip() or not role.strip():
+        raise ValueError("Project and role must be nonempty")
+    if previous_snapshot_id == current_snapshot_id:
+        raise ValueError("Previous and current snapshots must differ")
+    now = datetime.now(UTC).isoformat()
+    with _connect(Path(database_path)) as connection:
+        snapshots = connection.execute(
+            "SELECT snapshot_id, workbook_id FROM report_snapshots WHERE snapshot_id IN (?, ?)",
+            (previous_snapshot_id, current_snapshot_id),
+        ).fetchall()
+        if len(snapshots) != 2 or any(snapshot[1] != workbook_id for snapshot in snapshots):
+            raise ValueError("Selected snapshots must belong to the selected workbook version")
+        cursor = connection.execute(
+            "INSERT INTO analysis_jobs(workbook_id, previous_snapshot_id, current_snapshot_id, project_label, "
+            "role, mode, replay_bundle_id, status, progress, coverage_json, created_at_utc) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, '{}', ?)",
+            (workbook_id, previous_snapshot_id, current_snapshot_id, project_label, role, mode, replay_bundle_id, now),
+        )
+        return cursor.lastrowid
+
+
+def set_job_status(
+    database_path: Path,
+    job_id: int,
+    status: str,
+    *,
+    progress: int | None = None,
+    coverage: JsonDict | None = None,
+    error: str | None = None,
+) -> None:
+    valid_states = {"pending", "running", "interrupted", "failed", "no_ai_result", "completed"}
+    if status not in valid_states:
+        raise ValueError(f"Invalid job status: {status}")
+    if progress is not None and (type(progress) is not int or not 0 <= progress <= 100):
+        raise ValueError("Job progress must be an integer from 0 to 100")
+    if coverage is not None and not isinstance(coverage, dict):
+        raise ValueError("Job coverage must be an object")
+    allowed = {
+        "pending": {"pending", "running", "failed", "no_ai_result"},
+        "running": {"running", "completed", "failed", "interrupted"},
+        "interrupted": {"interrupted", "pending"},
+        "failed": {"failed", "pending"},
+        "no_ai_result": {"no_ai_result"},
+        "completed": {"completed"},
+    }
+    now = datetime.now(UTC).isoformat()
+    with _connect(Path(database_path)) as connection:
+        row = connection.execute("SELECT status, started_at_utc FROM analysis_jobs WHERE job_id=?", (job_id,)).fetchone()
+        if row is None:
+            raise ValueError(f"Unknown job ID: {job_id}")
+        current, started_at = row
+        if status not in allowed[current]:
+            raise ValueError(f"Invalid job status transition: {current} -> {status}")
+        new_progress = progress if progress is not None else (0 if status == "pending" else None)
+        finished_at = now if status in {"completed", "failed", "interrupted", "no_ai_result"} else None
+        connection.execute(
+            "UPDATE analysis_jobs SET status=?, progress=COALESCE(?, progress), "
+            "coverage_json=COALESCE(?, coverage_json), error=?, "
+            "started_at_utc=COALESCE(started_at_utc, ?), finished_at_utc=? WHERE job_id=?",
+            (status, new_progress, _json(coverage) if coverage is not None else None, error,
+             now if status == "running" else started_at, finished_at, job_id),
+        )
+
+
+def save_job_result(database_path: Path, job_id: int, result_path: str, metadata: JsonDict) -> None:
+    path = Path(result_path)
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    with _connect(Path(database_path)) as connection:
+        job = connection.execute("SELECT status FROM analysis_jobs WHERE job_id=?", (job_id,)).fetchone()
+        if job is None:
+            raise ValueError(f"Unknown job ID: {job_id}")
+        if job[0] != "running":
+            raise ValueError("Job result can only be saved while the job is running")
+        connection.execute(
+            "INSERT INTO job_results(job_id, result_path, result_sha256, metadata_json, created_at_utc) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (job_id, result_path, digest, _json(metadata), datetime.now(UTC).isoformat()),
+        )
+
+
+def get_job(database_path: Path, job_id: int) -> JsonDict | None:
+    with _connect(Path(database_path)) as connection:
+        connection.row_factory = sqlite3.Row
+        row = connection.execute("SELECT * FROM analysis_jobs WHERE job_id=?", (job_id,)).fetchone()
+        if row is None:
+            return None
+        result = connection.execute("SELECT * FROM job_results WHERE job_id=?", (job_id,)).fetchone()
+    job = dict(row)
+    job["coverage"] = json.loads(job.pop("coverage_json"))
+    job["result"] = ({
+        "path": result["result_path"],
+        "sha256": result["result_sha256"],
+        "metadata": json.loads(result["metadata_json"]),
+    } if result else None)
+    return job
+
+
+def save_finding_review(
+    database_path: Path,
+    job_id: int,
+    plan_id: str,
+    finding_index: int,
+    state: str,
+    note: str | None,
+) -> None:
+    if state not in {"accepted", "rejected", "clarification_needed"}:
+        raise ValueError(f"Invalid finding review state: {state}")
+    if not plan_id.strip() or type(finding_index) is not int or finding_index < 0:
+        raise ValueError("Finding review requires a plan ID and nonnegative index")
+    if note is not None and not isinstance(note, str):
+        raise ValueError("Finding review note must be text or null")
+    with _connect(Path(database_path)) as connection:
+        if connection.execute("SELECT 1 FROM analysis_jobs WHERE job_id=?", (job_id,)).fetchone() is None:
+            raise ValueError(f"Unknown job ID: {job_id}")
+        connection.execute(
+            "INSERT INTO finding_reviews(job_id, plan_id, finding_index, state, note, updated_at_utc) "
+            "VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(job_id, plan_id, finding_index) DO UPDATE SET "
+            "state=excluded.state, note=excluded.note, updated_at_utc=excluded.updated_at_utc",
+            (job_id, plan_id, finding_index, state, note, datetime.now(UTC).isoformat()),
+        )
+
+
+def list_finding_reviews(database_path: Path, job_id: int) -> list[JsonDict]:
+    with _connect(Path(database_path)) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute(
+            "SELECT plan_id, finding_index, state, note, updated_at_utc FROM finding_reviews "
+            "WHERE job_id=? ORDER BY plan_id, finding_index",
+            (job_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
