@@ -14,12 +14,12 @@ from .assessment import (
     assessment_schema,
     extraction_messages,
     extraction_schema,
-    restore_assessment_quotes,
-    validate_assessment,
     validate_extraction,
 )
-from .evidence import build_sources, load_rows, period_context, select_scope
+from .core import AssessmentValidationError, prepare_scope, validate_assessment_payload
+from .evidence import load_rows
 from .openrouter import OpenRouterError, complete_json
+from .policy import load_policy, resolve_policy
 from .replay import load_saved_payload, read_replay_provenance
 from .report import write_reports, write_run_notes
 
@@ -41,6 +41,7 @@ def _parser() -> argparse.ArgumentParser:
     compare.add_argument("--project", required=True)
     compare.add_argument("--role", required=True)
     compare.add_argument("--alias", action="append", default=[])
+    compare.add_argument("--policy", type=Path)
     compare.add_argument("--output", required=True, type=Path)
 
     replay = commands.add_parser("replay", help="replay saved model responses without calling a provider")
@@ -50,6 +51,7 @@ def _parser() -> argparse.ArgumentParser:
     replay.add_argument("--project", required=True)
     replay.add_argument("--role", required=True)
     replay.add_argument("--alias", action="append", default=[])
+    replay.add_argument("--policy", type=Path)
     replay.add_argument("--responses", required=True, type=Path)
     replay.add_argument("--output", required=True, type=Path)
     return parser
@@ -79,6 +81,11 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _policy_sha256(registry: JsonDict) -> str:
+    canonical = json.dumps(registry, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def _print_scope(scope: JsonDict) -> None:
     print(f"Selected previous: {scope['previous_sheet']} → current: {scope['current_sheet']}")
     print(f"Project: {scope['project']} | previous role: selected role only | current roles: {', '.join(sorted({row['role'] for row in scope['current_rows']}))}")
@@ -101,6 +108,8 @@ def _response_file(run_dir: Path, stage: str, result: JsonDict) -> None:
 def _failed_run(run_dir: Path | None, stage: str, error: Exception, api_key: str, metadata: JsonDict, scope: JsonDict) -> None:
     message = str(error).replace(api_key, "[REDACTED]") if api_key else str(error)
     failure = {"stage": stage, "error_type": type(error).__name__, "error": message}
+    if isinstance(error, AssessmentValidationError):
+        metadata["citation_repairs"] = error.citation_repairs
     if isinstance(error, OpenRouterError) and error.raw_response is not None and run_dir is not None:
         response_stage = "assessment" if stage in ("assessment request", "assessment validation") else "extraction"
         _json_file(run_dir / f"{response_stage}_response.json", {"raw_response": error.raw_response, "usage": error.usage})
@@ -122,6 +131,7 @@ def _run_replay(args: argparse.Namespace) -> int:
         "usage": {},
         "verification_mode": "offline_replay",
         "replayed_from": str(args.responses),
+        "role": args.role,
     }
     scope: JsonDict = {"selection_warnings": []}
     try:
@@ -131,10 +141,13 @@ def _run_replay(args: argparse.Namespace) -> int:
             raise InputError("Replay output must not be inside the historical response directory")
 
         run_dir = _new_run_dir(args.output)
+        registry = load_policy(args.policy)
+        metadata.update({"policy_version": registry["version"], "policy_sha256": _policy_sha256(registry)})
         rows = load_rows(args.input)
-        scope = select_scope(rows, args.previous, args.current, args.project, args.role, args.alias)
-        sources = build_sources(scope)
-        context = period_context(scope)
+        prepared = prepare_scope(
+            rows, previous=args.previous, current=args.current, project=args.project, role=args.role, aliases=args.alias
+        )
+        scope, sources, context = prepared.scope, prepared.sources, prepared.period_context
         metadata.update({
             "input_sha256": _sha256(args.input),
             "project": args.project,
@@ -158,9 +171,12 @@ def _run_replay(args: argparse.Namespace) -> int:
         stage = "replay assessment response"
         assessment_payload = load_saved_payload(responses_dir / "assessment_response.json")
         stage = "replay assessment validation"
-        assessment_payload, citation_repairs = restore_assessment_quotes(assessment_payload, sources)
-        metadata["citation_repairs"] = citation_repairs
-        assessments = validate_assessment(assessment_payload, commitments, sources)
+        validated = validate_assessment_payload(assessment_payload, commitments, sources)
+        metadata["citation_repairs"] = validated.citation_repairs
+        stage = "replay policy resolution"
+        policy_result = resolve_policy(validated.assessments, commitments, sources, scope, role=args.role, registry=registry)
+        assessments = policy_result.assessments
+        metadata["policy_resolution"] = policy_result.resolutions
         metadata["policy_questions"] = [question for item in assessments for question in item["policy_questions"]]
 
         stage = "replay report writing"
@@ -197,15 +213,18 @@ def main(argv: list[str] | None = None) -> int:
     stage = "configuration/input"
     api_key = os.environ.get("OPENROUTER_API_KEY", "")
     model = os.environ.get("OPENROUTER_MODEL", "openai/gpt-5-mini")
-    metadata: JsonDict = {"created_at_utc": datetime.now(UTC).isoformat(), "model": model, "usage": {}}
+    metadata: JsonDict = {"created_at_utc": datetime.now(UTC).isoformat(), "model": model, "usage": {}, "role": args.role}
     scope: JsonDict = {"selection_warnings": []}
     try:
         run_dir = _new_run_dir(args.output)
+        registry = load_policy(args.policy)
+        metadata.update({"policy_version": registry["version"], "policy_sha256": _policy_sha256(registry)})
         rows = load_rows(args.input)
         rules_text = args.rules.read_text(encoding="utf-8")
-        scope = select_scope(rows, args.previous, args.current, args.project, args.role, args.alias)
-        sources = build_sources(scope)
-        context = period_context(scope)
+        prepared = prepare_scope(
+            rows, previous=args.previous, current=args.current, project=args.project, role=args.role, aliases=args.alias
+        )
+        scope, sources, context = prepared.scope, prepared.sources, prepared.period_context
         metadata.update({
             "input_sha256": _sha256(args.input), "rules_sha256": _sha256(args.rules),
             "project": args.project, "requested_aliases": args.alias,
@@ -228,9 +247,12 @@ def main(argv: list[str] | None = None) -> int:
         _response_file(run_dir, "assessment", assessment)
         metadata["usage"]["assessment"] = assessment.get("usage", {})
         stage = "assessment validation"
-        assessment_payload, citation_repairs = restore_assessment_quotes(assessment["payload"], sources)
-        metadata["citation_repairs"] = citation_repairs
-        assessments = validate_assessment(assessment_payload, commitments, sources)
+        validated = validate_assessment_payload(assessment["payload"], commitments, sources)
+        metadata["citation_repairs"] = validated.citation_repairs
+        stage = "policy resolution"
+        policy_result = resolve_policy(validated.assessments, commitments, sources, scope, role=args.role, registry=registry)
+        assessments = policy_result.assessments
+        metadata["policy_resolution"] = policy_result.resolutions
         metadata["policy_questions"] = [question for item in assessments for question in item["policy_questions"]]
         stage = "report writing"
         write_reports(run_dir, scope, sources, commitments, assessments, metadata)

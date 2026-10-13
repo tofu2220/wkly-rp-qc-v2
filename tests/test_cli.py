@@ -13,6 +13,7 @@ from wkly_rp_qc_v2.assessment import extraction_schema
 from wkly_rp_qc_v2.cli import main
 from wkly_rp_qc_v2.evidence import build_sources, select_scope
 from wkly_rp_qc_v2.openrouter import OpenRouterError
+from wkly_rp_qc_v2.policy import load_policy
 from wkly_rp_qc_v2.report import write_reports, write_run_notes
 
 
@@ -35,10 +36,13 @@ def fixture_files(root, rows=None):
     return input_path, rules_path
 
 
-def run_args(root, input_path, rules_path, output=None):
-    return ["compare", "--input", str(input_path), "--rules", str(rules_path),
+def run_args(root, input_path, rules_path, output=None, policy=None):
+    args = ["compare", "--input", str(input_path), "--rules", str(rules_path),
             "--previous", "BC Tuần 01.09 - 05.09", "--current", "BC Tuần 07.09 - 12.09",
             "--project", "SMART PARKING", "--role", "PTSP", "--output", str(output or root / "results")]
+    if policy is not None:
+        args.extend(("--policy", str(policy)))
+    return args
 
 
 def quote_repair_responses(input_path, *, update_quote, finding_quotes=(), update_previous=False):
@@ -97,13 +101,54 @@ def two_commitment_responses(input_path):
     return extraction, assessment, raw_assessment, current_id
 
 
-def replay_args(input_path, responses_dir, output_dir):
-    return [
+def replay_args(input_path, responses_dir, output_dir, policy=None):
+    args = [
         "replay", "--input", str(input_path),
         "--previous", "BC Tuần 01.09 - 05.09", "--current", "BC Tuần 07.09 - 12.09",
         "--project", "SMART PARKING", "--role", "PTSP",
         "--responses", str(responses_dir), "--output", str(output_dir),
     ]
+    if policy is not None:
+        args.extend(("--policy", str(policy)))
+    return args
+
+
+POLICY_RULES = {
+    "identity_uncertain": "Identity Uncertain",
+    "status_ambiguous": "Status Ambiguous",
+    "milestone_conflict": "Milestone Conflict",
+    "closure_incomplete": "Closure Incomplete",
+    "missing_closure": "Missing Closure",
+}
+
+
+def policy_registry(decisions=None):
+    return {
+        "schema_version": 1,
+        "version": "test-policy-v1",
+        "rules": [
+            {"rule_id": rule_id, "model_label": label, "version": "1"}
+            for rule_id, label in POLICY_RULES.items()
+        ],
+        "decisions": decisions or [],
+    }
+
+
+def approved_case_decision(previous_sheet, current_sheet, plan_quote):
+    return {
+        "decision_id": "synthetic-replay-approval",
+        "rule_id": "closure_incomplete",
+        "severity": "Warning",
+        "severity_status": "confirmed",
+        "applies_to": {
+            "project": "SMART PARKING", "role": "PTSP", "previous_sheet": previous_sheet,
+            "current_sheet": current_sheet, "plan_quote": plan_quote,
+        },
+        "basis": "explicit_approval",
+        "source_reference": "synthetic-test-approval",
+        "approved_by": "Synthetic test fixture",
+        "approved_at": "2026-10-13",
+    }
 
 
 def replay_response(payload):
@@ -439,6 +484,156 @@ class CliTests(unittest.TestCase):
             self.assertNotIn("dotenv-test-token", output.getvalue())
             self.assertNotIn("dotenv-test-token", "".join(path.read_text(encoding="utf-8") for path in run_dir.iterdir()))
 
+    def test_compare_applies_default_policy_and_preserves_raw_model_fields(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            input_path, rules_path = fixture_files(root)
+            extracted, assessed, _, _, _ = quote_repair_responses(
+                input_path, update_quote="Đã bàn giao API", finding_quotes=("Đã bàn giao API",)
+            )
+            finding = assessed["assessments"][0]["findings"][0]
+            finding["severity"] = "Warning"
+            finding["severity_status"] = "confirmed"
+            assessed["assessments"][0]["requires_review"] = False
+            raw_assessment = {"choices": [{"message": {"content": json.dumps(assessed, ensure_ascii=False)}}]}
+            responses = iter((
+                {"payload": extracted, "raw_response": {"stage": "extract"}, "usage": {}},
+                {"payload": assessed, "raw_response": raw_assessment, "usage": {}},
+            ))
+            output = io.StringIO()
+            with patch("os.getcwd", return_value=str(root)), \
+                 patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-token"}, clear=True), \
+                 patch("wkly_rp_qc_v2.cli.complete_json", side_effect=lambda *a, **kw: next(responses)), \
+                 patch("sys.stdout", output):
+                self.assertEqual(main(run_args(root, input_path, rules_path)), 0)
+
+            run_dir = Path(output.getvalue().strip().splitlines()[-1].split(": ", 1)[1])
+            comparison = json.loads((run_dir / "comparison.json").read_text(encoding="utf-8"))
+            metadata = comparison["metadata"]
+            registry = load_policy()
+            expected_hash = hashlib.sha256(json.dumps(
+                registry, sort_keys=True, ensure_ascii=False, separators=(",", ":")
+            ).encode("utf-8")).hexdigest()
+            self.assertEqual(metadata["role"], "PTSP")
+            self.assertEqual(metadata["policy_version"], "demo-policy-v1")
+            self.assertEqual(metadata["policy_sha256"], expected_hash)
+            self.assertEqual(len(metadata["policy_resolution"]), comparison["counts"]["findings"])
+            effective = comparison["assessments"][0]
+            self.assertEqual(effective["findings"][0]["severity"], "Warning")
+            self.assertEqual(effective["findings"][0]["severity_status"], "proposed")
+            self.assertTrue(effective["requires_review"])
+            saved_response = json.loads((run_dir / "assessment_response.json").read_text(encoding="utf-8"))
+            self.assertEqual(json.loads(saved_response["raw_response"]["choices"][0]["message"]["content"]), assessed)
+            self.assertEqual(finding["severity_status"], "confirmed")
+
+    def test_invalid_policy_stops_before_provider(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            input_path, rules_path = fixture_files(root)
+            invalid_policy = root / "invalid-policy.json"
+            invalid_policy.write_text('{"schema_version":', encoding="utf-8")
+
+            with patch("os.getcwd", return_value=str(root)), \
+                 patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-token"}, clear=True), \
+                 patch("wkly_rp_qc_v2.cli.complete_json") as compare_provider:
+                self.assertEqual(main(run_args(root, input_path, rules_path, policy=invalid_policy)), 2)
+            compare_provider.assert_not_called()
+            compare_run = next((root / "results").iterdir())
+            self.assertEqual(json.loads((compare_run / "failure.json").read_text(encoding="utf-8"))["stage"], "configuration/input")
+            self.assertFalse((compare_run / "assessment_response.json").exists())
+
+            (root / "replay").mkdir()
+            input_path, responses_dir, _, _ = replay_fixture(root / "replay")
+            invalid_decision = approved_case_decision(
+                "BC Tuần 01.09 - 05.09", "BC Tuần 07.09 - 12.09", "Ship API",
+            )
+            invalid_decision["source_reference"] = ""
+            invalid_policy.write_text(json.dumps(policy_registry([invalid_decision])), encoding="utf-8")
+            historical_hashes = {
+                path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in responses_dir.iterdir()
+            }
+            with patch("os.getcwd", return_value=str(root)), \
+                 patch.dict(os.environ, {}, clear=True), \
+                 patch("wkly_rp_qc_v2.cli.load_dotenv") as load_env, \
+                 patch("wkly_rp_qc_v2.cli.complete_json") as replay_provider, \
+                 patch("wkly_rp_qc_v2.openrouter.urllib.request.urlopen") as network:
+                self.assertEqual(main(replay_args(input_path, responses_dir, root / "replay-output", invalid_policy)), 2)
+            load_env.assert_not_called()
+            replay_provider.assert_not_called()
+            network.assert_not_called()
+            replay_run = next((root / "replay-output").iterdir())
+            self.assertEqual(json.loads((replay_run / "failure.json").read_text(encoding="utf-8"))["stage"], "replay configuration/input")
+            self.assertEqual(historical_hashes, {
+                path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in responses_dir.iterdir()
+            })
+
+    def test_exact_custom_policy_is_used_in_replay(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            input_path, responses_dir, _, _ = replay_fixture(root)
+            rows = json.loads(input_path.read_text(encoding="utf-8"))["rows"]
+            scope = select_scope(rows, "BC Tuần 01.09 - 05.09", "BC Tuần 07.09 - 12.09", "SMART PARKING", "PTSP", [])
+            sources = build_sources(scope)
+            current_id = next(key for key, source in sources.items() if source["week"] == "current" and source["field"] == "actual")
+            assessment = {"assessments": [{
+                "plan_id": "P001", "source_reported_status": "In progress", "match_confidence": "Confirmed",
+                "match_explanation": "The selected evidence describes the planned deliverable.",
+                "reporting_clarity": "Incomplete", "update_evidence": [{"source_id": current_id, "quote": "alpha"}],
+                "findings": [{
+                    "rule": "Closure Incomplete", "severity": "Suggestion", "severity_status": "proposed",
+                    "explanation": "No next checkpoint is reported.",
+                    "evidence": [{"source_id": current_id, "quote": "alpha"}],
+                    "question_for_PM": "What is the next checkpoint?",
+                }],
+                "requires_review": True, "review_reasons": [], "policy_questions": [],
+            }]}
+            raw_assessment = replay_response(assessment)
+            (responses_dir / "assessment_response.json").write_text(json.dumps({
+                "raw_response": raw_assessment, "usage": {"total_tokens": 123},
+            }, ensure_ascii=False), encoding="utf-8")
+            original_hashes = {
+                path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in responses_dir.iterdir()
+            }
+            registry = policy_registry([approved_case_decision(
+                "BC Tuần 01.09 - 05.09", "BC Tuần 07.09 - 12.09", "Ship API",
+            )])
+            policy_path = root / "approved-test-policy.json"
+            policy_path.write_text(json.dumps(registry, ensure_ascii=False), encoding="utf-8")
+            output = io.StringIO()
+            with patch("os.getcwd", return_value=str(root)), \
+                 patch.dict(os.environ, {}, clear=True), \
+                 patch("wkly_rp_qc_v2.cli.load_dotenv") as load_env, \
+                 patch("wkly_rp_qc_v2.cli.complete_json", side_effect=AssertionError("provider called")) as provider, \
+                 patch("wkly_rp_qc_v2.openrouter.urllib.request.urlopen", side_effect=AssertionError("network called")) as network, \
+                 patch("sys.stdout", output):
+                self.assertEqual(main(replay_args(input_path, responses_dir, root / "custom-replay", policy_path)), 0)
+
+            load_env.assert_not_called()
+            provider.assert_not_called()
+            network.assert_not_called()
+            run_dir = Path(output.getvalue().strip().splitlines()[-1].split(": ", 1)[1])
+            comparison = json.loads((run_dir / "comparison.json").read_text(encoding="utf-8"))
+            metadata = comparison["metadata"]
+            finding = comparison["assessments"][0]["findings"][0]
+            self.assertEqual((finding["severity"], finding["severity_status"]), ("Warning", "confirmed"))
+            self.assertEqual(comparison["counts"], {"commitments": 1, "affected_commitments": 1, "findings": 1})
+            self.assertEqual(metadata["policy_resolution"][0]["decision_id"], "synthetic-replay-approval")
+            self.assertEqual(metadata["policy_resolution"][0]["source_reference"], "synthetic-test-approval")
+            self.assertEqual(metadata["role"], "PTSP")
+            self.assertEqual(metadata["policy_version"], "test-policy-v1")
+            self.assertEqual(metadata["policy_sha256"], hashlib.sha256(json.dumps(
+                registry, sort_keys=True, ensure_ascii=False, separators=(",", ":")
+            ).encode("utf-8")).hexdigest())
+            self.assertEqual(finding["evidence"][0]["quote"], "alpha")
+            self.assertEqual(json.loads((responses_dir / "assessment_response.json").read_text(encoding="utf-8"))["raw_response"], raw_assessment)
+            self.assertEqual(original_hashes, {
+                path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in responses_dir.iterdir()
+            })
+
     def test_missing_key_stops_before_api_and_preserves_failure_diagnostic(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -620,6 +815,8 @@ class CliTests(unittest.TestCase):
                  patch("sys.stdout", output), patch("sys.stderr", io.StringIO()):
                 self.assertEqual(main(run_args(root, input_path, rules_path)), 1)
             run_dir = Path(output.getvalue().strip().splitlines()[-1].split(": ", 1)[1])
+            failure = json.loads((run_dir / "failure.json").read_text(encoding="utf-8"))
+            self.assertEqual(failure["stage"], "assessment validation")
             notes = (run_dir / "run_notes.md").read_text(encoding="utf-8")
             self.assertIn("Số trích dẫn được khôi phục: 1", notes)
             self.assertIn(json.dumps("A B", ensure_ascii=False), notes)
