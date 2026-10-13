@@ -35,9 +35,30 @@
               {% set source = job.comparison.sources[evidence.source_id] %}
               <blockquote>{{ evidence.quote }}<footer>{{ source.sheet }}!{{ source.cell }} · row {{ source.source_row }} · {{ source.field }}</footer></blockquote>
             {% endfor %}
+            {% set review = namespace(value=None) %}
+            {% for item in job.reviews %}{% if item.plan_id == assessment.plan_id and item.finding_index == index %}{% set review.value = item %}{% endif %}{% endfor %}
+            <form action="/jobs/{{ job.job_id }}/reviews" method="post" class="review-form">
+              <input type="hidden" name="plan_id" value="{{ assessment.plan_id }}">
+              <input type="hidden" name="finding_index" value="{{ index }}">
+              <label>PM review
+                <select name="state" required>
+                  <option value="accepted" {% if review.value and review.value.state == "accepted" %}selected{% endif %}>Accepted</option>
+                  <option value="rejected" {% if review.value and review.value.state == "rejected" %}selected{% endif %}>Rejected</option>
+                  <option value="clarification_needed" {% if not review.value or review.value.state == "clarification_needed" %}selected{% endif %}>Clarification needed</option>
+                </select>
+              </label>
+              <label>PM note<textarea name="note" rows="2">{{ review.value.note if review.value and review.value.note else "" }}</textarea></label>
+              <button type="submit">Save PM review</button>
+            </form>
           </article>
         {% endfor %}
       </section>
     {% endfor %}
+    <section class="panel export-actions">
+      <h2>Export reviewed findings</h2>
+      <a class="button button-secondary" href="/jobs/{{ job.job_id }}/review.md">Download Markdown</a>
+      <a class="button button-secondary" href="/jobs/{{ job.job_id }}/export.csv">Download CSV</a>
+      <a class="button button-secondary" href="/jobs/{{ job.job_id }}/export.xlsx">Download XLSX</a>
+    </section>
   {% endif %}
 {% endblock %}

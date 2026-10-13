@@ -51,6 +51,12 @@ summary { width: fit-content; color: #086e72; font-weight: 700; cursor: pointer;
 .facts dt { color: #586b76; font-size: 0.84rem; }
 .facts dd { margin: 4px 0 0; font-weight: 650; overflow-wrap: anywhere; }
 .warnings { color: #65420a; }
+.finding { margin: 16px 0; padding-top: 10px; border-top: 1px solid #e1e8eb; }
+.review-form { display: grid; grid-template-columns: minmax(180px, 0.7fr) minmax(240px, 1.4fr) auto; align-items: end; gap: 12px; margin-top: 18px; padding: 14px; background: #f5f8f9; border-radius: 8px; }
+.review-form textarea { min-height: 42px; border: 1px solid #9aabb4; border-radius: 7px; padding: 8px 10px; font: inherit; resize: vertical; }
+.export-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+blockquote { margin: 12px 0; padding: 10px 14px; border-left: 3px solid #8aa7ad; background: #f5f8f9; white-space: pre-wrap; }
+blockquote footer { margin-top: 6px; color: #586b76; font-size: 0.85rem; }
 @media (max-width: 700px) {
   .site-header { padding: 0 16px; }
   .page { width: calc(100% - 24px); margin-top: 20px; }
@@ -58,4 +64,5 @@ summary { width: fit-content; color: #086e72; font-weight: 700; cursor: pointer;
   .upload-form, .mapping-grid, .facts { grid-template-columns: 1fr; }
   .mapping-grid .wide { grid-column: auto; }
   .section-heading { display: block; }
+  .review-form { grid-template-columns: 1fr; }
 }

@@ -5,7 +5,7 @@ from zipfile import BadZipFile
 
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from openpyxl.utils.exceptions import InvalidFileException
@@ -19,6 +19,7 @@ from .store import (
     list_snapshots,
     resolve_project_alias,
 )
+from .web_export import write_web_exports
 from .web_service import (
     WebSettings,
     confirm_alias,
@@ -27,6 +28,7 @@ from .web_service import (
     import_upload,
     job_details,
     replay_options,
+    review_finding,
     workbook_details,
 )
 
@@ -212,6 +214,49 @@ def create_app(settings: WebSettings) -> FastAPI:
         if job is None:
             raise HTTPException(status_code=404, detail="Analysis job not found")
         return templates.TemplateResponse(request, "job.html", {"job": job})
+
+    @app.post("/jobs/{job_id}/reviews")
+    async def save_review(
+        job_id: int,
+        plan_id: str = Form(...),
+        finding_index: int = Form(...),
+        state: str = Form(...),
+        note: str | None = Form(None),
+    ):
+        try:
+            review_finding(settings, job_id, plan_id, finding_index, state, note)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return RedirectResponse(f"/jobs/{job_id}", status_code=303)
+
+    def make_export(job_id: int) -> tuple[dict, Path]:
+        job = job_details(settings, job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Analysis job not found")
+        if job["comparison"] is None:
+            raise HTTPException(status_code=409, detail="Only completed jobs can be exported")
+        run_dir = Path(job["result"]["path"]).parent
+        write_web_exports(run_dir, job["comparison"], job["reviews"])
+        return job, run_dir
+
+    @app.get("/jobs/{job_id}/export.csv")
+    async def export_job_csv(job_id: int):
+        _, run_dir = make_export(job_id)
+        return FileResponse(run_dir / "pm_review.csv", media_type="text/csv", filename=f"job-{job_id}-review.csv")
+
+    @app.get("/jobs/{job_id}/export.xlsx")
+    async def export_job_xlsx(job_id: int):
+        _, run_dir = make_export(job_id)
+        return FileResponse(
+            run_dir / "pm_review.xlsx",
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            filename=f"job-{job_id}-review.xlsx",
+        )
+
+    @app.get("/jobs/{job_id}/review.md")
+    async def export_job_markdown(job_id: int):
+        _, run_dir = make_export(job_id)
+        return FileResponse(run_dir / "pm_review.md", media_type="text/markdown", filename=f"job-{job_id}-review.md")
 
     @app.post("/jobs/{job_id}/resume")
     async def resume_job(job_id: int):

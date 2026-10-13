@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import sqlite3
 import tempfile
 import time
@@ -10,11 +11,13 @@ import httpx
 from openpyxl import Workbook
 from test_jobs import job_fixture
 
+from wkly_rp_qc_v2.jobs import JobWorker
 from wkly_rp_qc_v2.store import (
     create_job,
     get_job,
     get_snapshot,
     get_template_mapping,
+    list_finding_reviews,
     resolve_project_alias,
 )
 from wkly_rp_qc_v2.web import WebSettings, create_app
@@ -272,6 +275,35 @@ class WebAppTests(unittest.TestCase):
                 self.assertIn("API is still in testing", job_page.text)
             provider.assert_not_called()
             network.assert_not_called()
+
+    def test_pm_review_and_exports_leave_replay_result_unchanged(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            database, storage, _, job_id = job_fixture(root)
+            JobWorker(database, storage, (root / "replays",)).process_job(job_id)
+            result_path = Path(get_job(database, job_id)["result"]["path"])
+            result_hash = hashlib.sha256(result_path.read_bytes()).hexdigest()
+            app = create_app(WebSettings(database, storage, (root / "replays",)))
+
+            with ASGITestClient(app) as client:
+                response = client.post(f"/jobs/{job_id}/reviews", data={
+                    "plan_id": "P001", "finding_index": "0", "state": "clarification_needed",
+                    "note": "Check <source>|\nagain",
+                }, follow_redirects=False)
+                self.assertEqual(response.status_code, 303)
+                page = client.get(response.headers["location"])
+                csv_export = client.get(f"/jobs/{job_id}/export.csv")
+                xlsx_export = client.get(f"/jobs/{job_id}/export.xlsx")
+                markdown_export = client.get(f"/jobs/{job_id}/review.md")
+
+            self.assertIn("clarification_needed", page.text)
+            self.assertEqual(csv_export.status_code, 200)
+            self.assertTrue(csv_export.content.startswith(b"\xef\xbb\xbf"))
+            self.assertEqual(xlsx_export.status_code, 200)
+            self.assertTrue(xlsx_export.content.startswith(b"PK"))
+            self.assertIn("clarification_needed", markdown_export.text)
+            self.assertEqual(hashlib.sha256(result_path.read_bytes()).hexdigest(), result_hash)
+            self.assertEqual(list_finding_reviews(database, job_id)[0]["note"], "Check <source>|\nagain")
 
 
 if __name__ == "__main__":
