@@ -460,7 +460,7 @@ def _validate_extraction(workbook, sheet_records: list[JsonDict], rows: list[Jso
                 counts["normalized_fields_verified"] += 1
     mapping_required = any(record["mapping_status"] == "mapping_required" for record in sheet_records)
     status = "mapping_required" if mapping_required else ("PASS" if not errors else "FAIL")
-    return {"status": status, "errors": errors, "counts": dict(counts)}
+    return {"status": status, "counts": dict(counts), "errors": errors}
 
 
 def inspect_workbook(path: Path) -> WorkbookImportPreview:
@@ -519,3 +519,15 @@ def inspect_workbook(path: Path) -> WorkbookImportPreview:
         excluded_rows=excluded_rows,
         validation=validation,
     )
+
+
+def normalized_payload(preview: WorkbookImportPreview) -> JsonDict:
+    """Build the stable normalized-input envelope used by historical replay hashes."""
+    return {
+        "schema_version": "1.0",
+        "workbook_filename": preview.workbook_filename,
+        "source_sha256": preview.workbook_sha256,
+        "rows": [{key: value for key, value in row.items() if key != "reporting_year"} for row in preview.rows],
+        "excluded_rows": preview.excluded_rows,
+        "validation": preview.validation,
+    }

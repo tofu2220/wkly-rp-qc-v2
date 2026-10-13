@@ -5,7 +5,7 @@ from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
 
-from wkly_rp_qc_v2.importer import inspect_workbook
+from wkly_rp_qc_v2.importer import inspect_workbook, normalized_payload
 
 
 def write_workbook(path: Path, template: str, *, draft: bool = False) -> None:
@@ -112,6 +112,29 @@ class WorkbookImporterTests(unittest.TestCase):
             self.assertIsNone(preview.sheets[0]["template"])
             self.assertEqual(preview.rows, [])
             self.assertEqual(preview.validation["status"], "mapping_required")
+
+    def test_inspect_workbook_preserves_normalized_export_validation_order(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "validation-order.xlsx"
+            write_workbook(path, "early")
+
+            preview = inspect_workbook(path)
+
+            self.assertEqual(list(preview.validation), ["status", "counts", "errors"])
+
+    def test_normalized_payload_preserves_legacy_replay_input_envelope(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "legacy-envelope.xlsx"
+            write_workbook(path, "early")
+            preview = inspect_workbook(path)
+
+            payload = normalized_payload(preview)
+
+            self.assertEqual(list(payload), [
+                "schema_version", "workbook_filename", "source_sha256", "rows", "excluded_rows", "validation",
+            ])
+            self.assertNotIn("reporting_year", payload["rows"][0])
+            self.assertEqual(payload["rows"][0]["field_provenance"], preview.rows[0]["field_provenance"])
 
     def test_inspect_workbook_preserves_original_whitespace_and_multiline_text(self):
         with tempfile.TemporaryDirectory() as temp:
