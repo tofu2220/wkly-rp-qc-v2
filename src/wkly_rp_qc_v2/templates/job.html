@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Job {{ job.job_id }} · Weekly Report QC{% endblock %}
+{% block head_extra %}{% if job.status in ("pending", "running") %}<meta http-equiv="refresh" content="2">{% endif %}{% endblock %}
+{% block content %}
+  <p class="eyebrow"><a href="/">Workbooks</a> / analysis job</p>
+  <h1>Analysis job {{ job.job_id }}</h1>
+  <p><span class="status status-{{ job.status }}">{{ job.status }}</span> · {{ job.project_label }} · {{ job.role }}</p>
+  {% if job.coverage.result_state %}<p>Result state: <strong>{{ job.coverage.result_state }}</strong></p>{% endif %}
+  {% if job.status in ("pending", "running") %}
+    <section class="panel"><h2>Offline replay in progress</h2><progress value="{{ job.progress }}" max="100">{{ job.progress }}%</progress><p>{{ job.progress }}%</p></section>
+  {% elif job.status == "interrupted" %}
+    <section class="panel"><div class="notice notice-warning">Job bị ngắt khi server dừng. Chưa có kết quả sạch.</div><form action="/jobs/{{ job.job_id }}/resume" method="post"><button type="submit">Resume this job</button></form></section>
+  {% elif job.status == "no_ai_result" %}
+    <section class="panel"><div class="notice notice-warning">No AI result available for this exact source/scope. This is not a clean/pass result.</div></section>
+  {% elif job.status == "failed" %}
+    <section class="panel"><div class="notice notice-error">Analysis failed: {{ job.error }}</div><form action="/jobs/{{ job.job_id }}/resume" method="post"><button type="submit">Retry this job</button></form></section>
+  {% elif job.comparison %}
+    <section class="panel"><h2>Coverage</h2>
+      <p>{{ job.coverage.commitments }} commitments · {{ job.coverage.affected_commitments }} affected · {{ job.coverage.findings }} findings</p>
+      <p>Available: {{ job.coverage.available_checks | join(", ") }} · Unavailable: {{ job.coverage.unavailable_checks | join(", ") }}</p>
+    </section>
+    {% for assessment in job.comparison.assessments %}
+      <section class="panel"><h2>{{ assessment.plan_id }}</h2>
+        <p>Reported status: {{ assessment.source_reported_status or "Not reported" }} · Match: {{ assessment.match_confidence }} · Clarity: {{ assessment.reporting_clarity }}</p>
+        {% for finding in assessment.findings %}
+          {% set index = loop.index0 %}
+          {% set audit = namespace(record=None) %}
+          {% for record in job.comparison.metadata.policy_resolution %}{% if record.plan_id == assessment.plan_id and record.finding_index == index %}{% set audit.record = record %}{% endif %}{% endfor %}
+          <article class="finding">
+            <h3>{{ finding.rule }} · {{ finding.severity or "Unresolved" }} ({{ finding.severity_status }})</h3>
+            {% if audit.record %}<p class="hint">Model: {{ audit.record.model_severity or "Unresolved" }} ({{ audit.record.model_severity_status }}) · {% if audit.record.decision_id %}{{ audit.record.decision_id }} · {{ audit.record.source_reference }}{% else %}no approved decision{% endif %}</p>{% endif %}
+            <p>{{ finding.explanation }}</p>
+            <p><strong>Question:</strong> {{ finding.question_for_PM }}</p>
+            {% for evidence in finding.evidence %}
+              {% set source = job.comparison.sources[evidence.source_id] %}
+              <blockquote>{{ evidence.quote }}<footer>{{ source.sheet }}!{{ source.cell }} · row {{ source.source_row }} · {{ source.field }}</footer></blockquote>
+            {% endfor %}
+          </article>
+        {% endfor %}
+      </section>
+    {% endfor %}
+  {% endif %}
+{% endblock %}

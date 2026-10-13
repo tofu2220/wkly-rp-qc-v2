@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from openpyxl.utils.exceptions import InvalidFileException
 
+from .jobs import JobWorker
 from .store import (
     find_source_conflicts,
     get_snapshot,
@@ -22,8 +23,10 @@ from .web_service import (
     WebSettings,
     confirm_alias,
     confirm_mapping,
+    create_replay_job,
     import_upload,
-    scope_preview,
+    job_details,
+    replay_options,
     workbook_details,
 )
 
@@ -35,6 +38,10 @@ def create_app(settings: WebSettings) -> FastAPI:
     templates = Jinja2Templates(directory=str(package_dir / "templates"))
     app = FastAPI(title="Weekly Report Quality Checker", docs_url=None, redoc_url=None)
     app.state.settings = settings
+    worker = JobWorker(settings.database_path, settings.storage_dir, settings.replay_roots)
+    app.state.job_worker = worker
+    app.router.on_startup.append(worker.start)
+    app.router.on_shutdown.append(worker.stop)
     app.mount("/static", StaticFiles(directory=package_dir / "static"), name="static")
 
     @app.get("/")
@@ -140,10 +147,10 @@ def create_app(settings: WebSettings) -> FastAPI:
                     projects.add(alias["canonical_label"])
                 if row["role_label"]:
                     roles.add(row["role_label"])
-        prepared, error = None, None
+        prepared, error, replay_bundles = None, None, []
         if all((previous_snapshot_id, current_snapshot_id, project, role)):
             try:
-                prepared = scope_preview(
+                prepared, replay_bundles, _ = replay_options(
                     settings, previous_snapshot_id=previous_snapshot_id, current_snapshot_id=current_snapshot_id,
                     project=project, role=role, aliases=aliases or [],
                 )
@@ -152,12 +159,67 @@ def create_app(settings: WebSettings) -> FastAPI:
         return templates.TemplateResponse(request, "scope.html", {
             "snapshots": snapshots, "projects": sorted(projects), "roles": sorted(roles),
             "prepared": prepared, "error": error,
+            "replay_bundles": [{
+                "bundle_id": bundle["bundle_id"], "run_name": bundle["run_name"],
+                "scope_provenance": bundle["provenance"]["scope_provenance"],
+            } for bundle in replay_bundles],
             "available_aliases": list_project_aliases(settings.database_path, project) if project else [],
             "selected": {
                 "previous": previous_snapshot_id, "current": current_snapshot_id,
                 "project": project, "role": role, "aliases": aliases or [],
             },
         })
+
+    @app.get("/replays")
+    async def replay_list(
+        previous_snapshot_id: int,
+        current_snapshot_id: int,
+        project: str,
+        role: str,
+        aliases: Annotated[list[str] | None, Query()] = None,
+    ):
+        _, bundles, _ = replay_options(
+            settings, previous_snapshot_id=previous_snapshot_id, current_snapshot_id=current_snapshot_id,
+            project=project, role=role, aliases=aliases or [],
+        )
+        return [{
+            "bundle_id": bundle["bundle_id"], "run_name": bundle["run_name"],
+            "scope_provenance": bundle["provenance"]["scope_provenance"],
+        } for bundle in bundles]
+
+    @app.post("/jobs")
+    async def start_job(
+        previous_snapshot_id: int = Form(...),
+        current_snapshot_id: int = Form(...),
+        project: str = Form(...),
+        role: str = Form(...),
+        aliases: Annotated[list[str] | None, Form()] = None,
+        replay_bundle_id: str | None = Form(None),
+    ):
+        try:
+            job_id = create_replay_job(
+                settings, previous_snapshot_id=previous_snapshot_id, current_snapshot_id=current_snapshot_id,
+                project=project, role=role, aliases=aliases or [], replay_bundle_id=replay_bundle_id,
+            )
+            worker.enqueue(job_id)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return RedirectResponse(f"/jobs/{job_id}", status_code=303)
+
+    @app.get("/jobs/{job_id}")
+    async def show_job(request: Request, job_id: int):
+        job = job_details(settings, job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Analysis job not found")
+        return templates.TemplateResponse(request, "job.html", {"job": job})
+
+    @app.post("/jobs/{job_id}/resume")
+    async def resume_job(job_id: int):
+        try:
+            worker.resume(job_id)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        return RedirectResponse(f"/jobs/{job_id}", status_code=303)
 
     return app
 

@@ -1,14 +1,18 @@
 import asyncio
 import sqlite3
 import tempfile
+import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import httpx
 from openpyxl import Workbook
+from test_jobs import job_fixture
 
 from wkly_rp_qc_v2.store import (
     create_job,
+    get_job,
     get_snapshot,
     get_template_mapping,
     resolve_project_alias,
@@ -218,7 +222,7 @@ class WebAppTests(unittest.TestCase):
                 ).lastrowid
             create_job(
                 database, workbook_id=workbook_id, previous_snapshot_id=1, current_snapshot_id=current_id,
-                project_label="SMART PARKING", role="PTSP", mode="replay", replay_bundle_id="bundle-1",
+                project_label="SMART PARKING", role="PTSP", aliases=[], mode="replay", replay_bundle_id="bundle-1",
             )
             mapping = {
                 "mode": "flat", "template_id": "manual-flat", "version": "2",
@@ -231,6 +235,44 @@ class WebAppTests(unittest.TestCase):
 
             self.assertIsNone(get_template_mapping(database, "manual-flat", "2"))
 
+    def test_browser_scope_queues_only_the_exact_eligible_offline_replay(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            database, storage, _, seed_job_id = job_fixture(root)
+            seed_job = get_job(database, seed_job_id)
+            app = create_app(WebSettings(database, storage, (root / "replays",)))
+            with ASGITestClient(app) as client, \
+                 patch("wkly_rp_qc_v2.cli.complete_json", side_effect=AssertionError("provider called")) as provider, \
+                 patch("wkly_rp_qc_v2.openrouter.urllib.request.urlopen", side_effect=AssertionError("network called")) as network:
+                scope = client.get("/scope", params={
+                    "previous_snapshot_id": seed_job["previous_snapshot_id"],
+                    "current_snapshot_id": seed_job["current_snapshot_id"],
+                    "project": "SMART PARKING", "role": "PTSP",
+                })
+                self.assertIn("sample-run", scope.text)
+                catalog = client.get("/replays", params={
+                    "previous_snapshot_id": seed_job["previous_snapshot_id"],
+                    "current_snapshot_id": seed_job["current_snapshot_id"],
+                    "project": "SMART PARKING", "role": "PTSP",
+                }).json()
+                response = client.post("/jobs", data={
+                    "previous_snapshot_id": seed_job["previous_snapshot_id"],
+                    "current_snapshot_id": seed_job["current_snapshot_id"],
+                    "project": "SMART PARKING", "role": "PTSP",
+                    "replay_bundle_id": catalog[0]["bundle_id"],
+                }, follow_redirects=False)
+                self.assertEqual(response.status_code, 303)
+                job_id = int(response.headers["location"].rsplit("/", 1)[1])
+                deadline = time.monotonic() + 3
+                while time.monotonic() < deadline and get_job(database, job_id)["status"] in {"pending", "running"}:
+                    time.sleep(0.01)
+                job_page = client.get(response.headers["location"])
+                self.assertIn("completed", job_page.text)
+                self.assertIn("completed_with_findings", job_page.text)
+                self.assertIn("API is still in testing", job_page.text)
+            provider.assert_not_called()
+            network.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -239,12 +281,18 @@ if __name__ == "__main__":
 class ASGITestClient:
     def __init__(self, app):
         self.app = app
+        self.loop = None
+        self.lifespan = None
 
     def __enter__(self):
+        self.loop = asyncio.new_event_loop()
+        self.lifespan = self.app.router.lifespan_context(self.app)
+        self.loop.run_until_complete(self.lifespan.__aenter__())
         return self
 
-    def __exit__(self, *_):
-        return None
+    def __exit__(self, exc_type, exc, traceback):
+        self.loop.run_until_complete(self.lifespan.__aexit__(exc_type, exc, traceback))
+        self.loop.close()
 
     async def _request(self, method, path, **kwargs):
         async with httpx.AsyncClient(
@@ -253,7 +301,7 @@ class ASGITestClient:
             return await client.request(method, path, **kwargs)
 
     def get(self, path, **kwargs):
-        return asyncio.run(self._request("GET", path, **kwargs))
+        return self.loop.run_until_complete(self._request("GET", path, **kwargs))
 
     def post(self, path, **kwargs):
-        return asyncio.run(self._request("POST", path, **kwargs))
+        return self.loop.run_until_complete(self._request("POST", path, **kwargs))

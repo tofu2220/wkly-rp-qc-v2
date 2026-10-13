@@ -66,7 +66,7 @@ class WorkbookStoreTests(unittest.TestCase):
             initialize_store(database)
             initialize_store(database)
 
-            self.assertEqual(scalar(database, "SELECT MAX(version) FROM schema_version"), 4)
+            self.assertEqual(scalar(database, "SELECT MAX(version) FROM schema_version"), 5)
             with sqlite3.connect(database) as connection:
                 tables = {row[0] for row in connection.execute(
                     "SELECT name FROM sqlite_master WHERE type='table'"
@@ -213,7 +213,7 @@ class WorkbookStoreTests(unittest.TestCase):
 
             initialize_store(database)
 
-            self.assertEqual(scalar(database, "SELECT MAX(version) FROM schema_version"), 4)
+            self.assertEqual(scalar(database, "SELECT MAX(version) FROM schema_version"), 5)
             with sqlite3.connect(database) as connection:
                 tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             self.assertIn("template_mappings", tables)

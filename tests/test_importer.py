@@ -136,6 +136,15 @@ class WorkbookImporterTests(unittest.TestCase):
             self.assertNotIn("reporting_year", payload["rows"][0])
             self.assertEqual(payload["rows"][0]["field_provenance"], preview.rows[0]["field_provenance"])
 
+    def test_normalized_payload_can_restore_original_upload_filename(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "content-addressed-file.xlsx"
+            write_workbook(path, "early")
+
+            payload = normalized_payload(inspect_workbook(path), workbook_filename="original-upload.xlsx")
+
+            self.assertEqual(payload["workbook_filename"], "original-upload.xlsx")
+
     def test_manual_flat_mapping_preserves_empty_labels_without_forward_fill(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "manual.xlsx"

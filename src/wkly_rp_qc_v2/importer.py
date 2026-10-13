@@ -647,11 +647,13 @@ def inspect_workbook(
     )
 
 
-def normalized_payload(preview: WorkbookImportPreview) -> JsonDict:
+def normalized_payload(
+    preview: WorkbookImportPreview, *, workbook_filename: str | None = None
+) -> JsonDict:
     """Build the stable normalized-input envelope used by historical replay hashes."""
     return {
         "schema_version": "1.0",
-        "workbook_filename": preview.workbook_filename,
+        "workbook_filename": preview.workbook_filename if workbook_filename is None else workbook_filename,
         "source_sha256": preview.workbook_sha256,
         "rows": [{key: value for key, value in row.items() if key != "reporting_year"} for row in preview.rows],
         "excluded_rows": preview.excluded_rows,

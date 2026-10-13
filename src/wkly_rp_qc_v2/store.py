@@ -151,6 +151,10 @@ def initialize_store(database_path: Path) -> None:
         if "mapping_source_reference" not in snapshot_columns:
             connection.execute("ALTER TABLE report_snapshots ADD COLUMN mapping_source_reference TEXT")
         connection.execute("INSERT OR IGNORE INTO schema_version(version) VALUES (4)")
+        job_columns = {row[1] for row in connection.execute("PRAGMA table_info(analysis_jobs)")}
+        if "aliases_json" not in job_columns:
+            connection.execute("ALTER TABLE analysis_jobs ADD COLUMN aliases_json TEXT NOT NULL DEFAULT '[]'")
+        connection.execute("INSERT OR IGNORE INTO schema_version(version) VALUES (5)")
 
 
 def _json(value: object) -> str:
@@ -615,6 +619,7 @@ def create_job(
     current_snapshot_id: int,
     project_label: str,
     role: str,
+    aliases: list[str],
     mode: str,
     replay_bundle_id: str | None,
 ) -> int:
@@ -622,6 +627,8 @@ def create_job(
         raise ValueError("Only offline replay jobs are enabled")
     if not project_label.strip() or not role.strip():
         raise ValueError("Project and role must be nonempty")
+    if not isinstance(aliases, list) or any(not isinstance(alias, str) or not alias.strip() for alias in aliases):
+        raise ValueError("Job aliases must be nonempty strings")
     if previous_snapshot_id == current_snapshot_id:
         raise ValueError("Previous and current snapshots must differ")
     now = datetime.now(UTC).isoformat()
@@ -634,9 +641,10 @@ def create_job(
             raise ValueError("Selected snapshots must belong to the selected workbook version")
         cursor = connection.execute(
             "INSERT INTO analysis_jobs(workbook_id, previous_snapshot_id, current_snapshot_id, project_label, "
-            "role, mode, replay_bundle_id, status, progress, coverage_json, created_at_utc) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, '{}', ?)",
-            (workbook_id, previous_snapshot_id, current_snapshot_id, project_label, role, mode, replay_bundle_id, now),
+            "role, aliases_json, mode, replay_bundle_id, status, progress, coverage_json, created_at_utc) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, '{}', ?)",
+            (workbook_id, previous_snapshot_id, current_snapshot_id, project_label, role, _json(aliases),
+             mode, replay_bundle_id, now),
         )
         return cursor.lastrowid
 
@@ -658,8 +666,8 @@ def set_job_status(
     if coverage is not None and not isinstance(coverage, dict):
         raise ValueError("Job coverage must be an object")
     allowed = {
-        "pending": {"pending", "running", "failed", "no_ai_result"},
-        "running": {"running", "completed", "failed", "interrupted"},
+        "pending": {"pending", "running", "interrupted", "failed", "no_ai_result"},
+        "running": {"running", "completed", "failed", "interrupted", "no_ai_result"},
         "interrupted": {"interrupted", "pending"},
         "failed": {"failed", "pending"},
         "no_ai_result": {"no_ai_result"},
@@ -709,12 +717,24 @@ def get_job(database_path: Path, job_id: int) -> JsonDict | None:
         result = connection.execute("SELECT * FROM job_results WHERE job_id=?", (job_id,)).fetchone()
     job = dict(row)
     job["coverage"] = json.loads(job.pop("coverage_json"))
+    job["aliases"] = json.loads(job.pop("aliases_json"))
     job["result"] = ({
         "path": result["result_path"],
         "sha256": result["result_sha256"],
         "metadata": json.loads(result["metadata_json"]),
     } if result else None)
     return job
+
+
+def list_jobs(database_path: Path, *, status: str | None = None) -> list[JsonDict]:
+    with _connect(Path(database_path)) as connection:
+        if status is None:
+            rows = connection.execute("SELECT job_id FROM analysis_jobs ORDER BY job_id").fetchall()
+        else:
+            rows = connection.execute(
+                "SELECT job_id FROM analysis_jobs WHERE status=? ORDER BY job_id", (status,)
+            ).fetchall()
+    return [job for row in rows if (job := get_job(database_path, row[0])) is not None]
 
 
 def save_finding_review(

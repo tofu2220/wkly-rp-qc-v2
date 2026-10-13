@@ -17,7 +17,24 @@
       <p>Previous rows: {{ prepared.scope.previous_rows | length }} · Current rows: {{ prepared.scope.current_rows | length }} · Sources: {{ prepared.sources | length }}</p>
       <p>Periods: {{ prepared.scope.previous_sheet }} → {{ prepared.scope.current_sheet }}</p>
       {% if prepared.scope.selection_warnings %}<ul class="warnings">{% for warning in prepared.scope.selection_warnings %}<li>{{ warning }}</li>{% endfor %}</ul>{% endif %}
-      <div class="notice notice-info">Chưa chạy phân tích. Chế độ replay chỉ bật nếu tìm được response có hash và phạm vi trùng khớp.</div>
+      {% if replay_bundles %}
+        <form action="/jobs" method="post" class="job-form">
+          <input type="hidden" name="previous_snapshot_id" value="{{ selected.previous }}">
+          <input type="hidden" name="current_snapshot_id" value="{{ selected.current }}">
+          <input type="hidden" name="project" value="{{ selected.project }}">
+          <input type="hidden" name="role" value="{{ selected.role }}">
+          {% for alias in selected.aliases %}<input type="hidden" name="aliases" value="{{ alias }}">{% endfor %}
+          <fieldset><legend>Saved responses eligible for this exact scope</legend>
+          {% for bundle in replay_bundles %}
+            <label class="replay-choice"><input type="radio" name="replay_bundle_id" value="{{ bundle.bundle_id }}" {% if loop.first %}checked{% endif %} required>
+              <span>{{ bundle.run_name }} · scope {{ bundle.scope_provenance }}</span></label>
+          {% endfor %}
+          </fieldset>
+          <button type="submit">Start offline replay</button>
+        </form>
+      {% else %}
+        <div class="notice notice-warning" role="status">No AI result available for this exact scope. This is not a clean/pass result.</div>
+      {% endif %}
     </section>
   {% endif %}
 {% endblock %}

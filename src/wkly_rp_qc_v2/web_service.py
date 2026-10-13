@@ -1,3 +1,5 @@
+import hashlib
+import json
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -7,15 +9,20 @@ from openpyxl.utils import get_column_letter
 
 from .core import JsonDict, PreparedScope, prepare_scope
 from .importer import inspect_workbook
+from .replay_catalog import eligible_replays, normalized_input_for_workbook
 from .store import (
     ImportResult,
     apply_template_mapping,
     confirm_project_alias,
+    create_job,
+    get_job,
     get_original_workbook_path,
     get_snapshot,
     import_workbook,
+    list_finding_reviews,
     list_project_aliases,
     list_snapshots,
+    save_finding_review,
 )
 
 MAX_UPLOAD_BYTES = 32 * 1024 * 1024
@@ -147,3 +154,84 @@ def scope_preview(
         role=role,
         aliases=aliases or [],
     )
+
+
+def replay_options(
+    settings: WebSettings,
+    *,
+    previous_snapshot_id: int,
+    current_snapshot_id: int,
+    project: str,
+    role: str,
+    aliases: list[str] | None = None,
+) -> tuple[PreparedScope, list[JsonDict], int]:
+    previous = get_snapshot(settings.database_path, previous_snapshot_id)
+    current = get_snapshot(settings.database_path, current_snapshot_id)
+    if previous is None or current is None:
+        raise ValueError("Selected report snapshot is unavailable")
+    if previous["workbook_id"] != current["workbook_id"]:
+        raise ValueError("Select both periods from the same immutable workbook version")
+    prepared = scope_preview(
+        settings, previous_snapshot_id=previous_snapshot_id, current_snapshot_id=current_snapshot_id,
+        project=project, role=role, aliases=aliases,
+    )
+    normalized_path = normalized_input_for_workbook(
+        settings.database_path, settings.storage_dir, previous["workbook_id"]
+    )
+    bundles = eligible_replays(
+        normalized_path, prepared.scope, role, aliases or [], settings.replay_roots
+    )
+    return prepared, bundles, previous["workbook_id"]
+
+
+def create_replay_job(
+    settings: WebSettings,
+    *,
+    previous_snapshot_id: int,
+    current_snapshot_id: int,
+    project: str,
+    role: str,
+    aliases: list[str],
+    replay_bundle_id: str | None,
+) -> int:
+    _, bundles, workbook_id = replay_options(
+        settings, previous_snapshot_id=previous_snapshot_id, current_snapshot_id=current_snapshot_id,
+        project=project, role=role, aliases=aliases,
+    )
+    if replay_bundle_id is not None and not any(bundle["bundle_id"] == replay_bundle_id for bundle in bundles):
+        raise ValueError("Selected replay is not eligible for this exact scope")
+    return create_job(
+        settings.database_path, workbook_id=workbook_id,
+        previous_snapshot_id=previous_snapshot_id, current_snapshot_id=current_snapshot_id,
+        project_label=project, role=role, aliases=aliases, mode="replay",
+        replay_bundle_id=replay_bundle_id,
+    )
+
+
+def job_details(settings: WebSettings, job_id: int) -> JsonDict | None:
+    job = get_job(settings.database_path, job_id)
+    if job is None:
+        return None
+    job["reviews"] = list_finding_reviews(settings.database_path, job_id)
+    job["comparison"] = None
+    if job["result"] is not None:
+        storage_root = settings.storage_dir.resolve()
+        result_path = Path(job["result"]["path"]).resolve()
+        if storage_root not in result_path.parents:
+            raise ValueError("Job result path escapes the local storage directory")
+        if hashlib.sha256(result_path.read_bytes()).hexdigest() != job["result"]["sha256"]:
+            raise ValueError("Job result hash mismatch")
+        job["comparison"] = json.loads(result_path.read_text(encoding="utf-8"))
+    return job
+
+
+def review_finding(
+    settings: WebSettings, job_id: int, plan_id: str, finding_index: int, state: str, note: str | None
+) -> None:
+    job = job_details(settings, job_id)
+    if job is None or job["comparison"] is None:
+        raise ValueError("Only a completed job can be reviewed")
+    matches = [item for item in job["comparison"]["assessments"] if item["plan_id"] == plan_id]
+    if not matches or not 0 <= finding_index < len(matches[0]["findings"]):
+        raise ValueError("Finding does not exist in this job result")
+    save_finding_review(settings.database_path, job_id, plan_id, finding_index, state, note)
