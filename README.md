@@ -49,6 +49,19 @@ The output contains `mentor_review.md`, `comparison.json`, `comparison.csv`, and
 
 An invalid saved response remains invalid: replay preserves failure diagnostics and writes no successful comparison files. It never filters extra assessment objects, fills missing data, or regrades model findings. Input/provenance and saved-response errors exit `2`; local extraction/assessment validation or output errors exit `1`. A successful replay confirms structural/source validity for those historical responses only; it does not evaluate new reports or prove semantic correctness.
 
+## Local browser review
+
+Install the project dependencies and start the local-only web app:
+
+```bash
+uv sync
+uv run wkly-rp-qc-web
+```
+
+Open `http://127.0.0.1:8000`. The app binds only to localhost and stores the SQLite database and uploaded workbook versions under `~/.local/share/wkly-rp-qc-v2/` by default. Use `--data-dir PATH` to choose a different local storage directory, or `--replay-root PATH` to add a directory containing historical replay runs. The default replay root is `./results`.
+
+Uploading a workbook only imports and previews it. Review mapping, draft/period warnings, project aliases, and overlapping sources before selecting a scope. A replay is offered only when its normalized-input hash and scope match; no match is shown as **no AI result available**, never as a clean pass. This release runs offline replay only: it does not load provider credentials or call a model. Stop the server with Ctrl+C.
+
 ## Severity policy and provenance
 
 Both `compare` and `replay` accept an optional `--policy PATH`. If omitted, the packaged `demo-policy-v1` registry is used. It contains the five supported rule versions and **no confirmed decisions**. An invalid explicit policy stops the run; the CLI does not silently fall back to the packaged policy.
