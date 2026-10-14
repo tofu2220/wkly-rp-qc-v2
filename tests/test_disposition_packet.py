@@ -388,6 +388,37 @@ class DispositionPacketTests(unittest.TestCase):
         expected = manifest["cases"][:1] if self.stage == "tracer" else manifest["cases"]
         self.assertEqual([case["case_id"] for case in ledger["cases"]], [case["case_id"] for case in expected])
 
+    def test_full_named_cell_evidence(self):
+        _, ledger = load_packet()
+        validate_packet(ledger, self.stage)
+        if self.stage == "six_case":
+            verify_named_cell_inventory(ledger)
+
+    def test_chat_projection_hides_labels_before_response(self):
+        _, ledger = load_packet()
+        validate_packet(ledger, self.stage)
+        for case in ledger["cases"]:
+            projection = build_chat_projection(case)
+            self.assertEqual(projection["title"], f"{CASE_SCOPE[case['case_id']][0]} · {CASE_SCOPE[case['case_id']][1]}")
+            self.assertEqual(len(projection["source_rows"]), 2)
+
+    def test_six_case_dispositions_and_missing_provenance(self):
+        _, ledger = load_packet()
+        validate_packet(ledger, self.stage)
+        if self.stage == "six_case":
+            for case in ledger["cases"]:
+                response = case["preliminary_response"]
+                self.assertIsNone(response["judgment"], case["case_id"])
+                self.assertTrue(response["missing_information"], case["case_id"])
+                self.assertTrue(response["follow_up_question"], case["case_id"])
+                self.assertEqual(case["mentor_decision"]["status"], "pending")
+                self.assertEqual(case["ground_truth_status"], "needs_business_review")
+
+    def test_payload_revision_integrity(self):
+        _, ledger = load_packet()
+        validate_packet(ledger, self.stage)
+        self.assertEqual(ledger["payload_digest"], ledger["revisions"][-1]["digest"])
+
 
 if __name__ == "__main__":
     stage = os.environ.get("DISPOSITION_EXPECT_STAGE", "tracer")
