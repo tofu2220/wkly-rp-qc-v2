@@ -10,7 +10,7 @@ JsonDict = dict[str, Any]
 
 CSV_FIELDS = (
     "plan_id", "planned_commitment", "source_reported_status", "match_confidence", "reporting_clarity",
-    "findings", "plan_evidence", "update_evidence", "review_reasons", "policy_questions",
+    "findings", "plan_evidence", "update_evidence", "review_reasons", "policy_questions", "policy_resolution",
 )
 
 
@@ -31,18 +31,34 @@ def _location(evidence: list[JsonDict], sources: JsonDict) -> str:
     return "; ".join(dict.fromkeys(locations)) or "—"
 
 
-def _finding_text(findings: list[JsonDict], sources: JsonDict) -> str:
+def _finding_text(
+    findings: list[JsonDict], sources: JsonDict, policy_records: list[JsonDict] | None = None
+) -> str:
     if not findings:
         return "Không có phát hiện"
     rendered = []
-    for finding in findings:
+    for finding_index, finding in enumerate(findings):
+        policy = next((
+            record for record in (policy_records or [])
+            if record.get("finding_index") == finding_index
+        ), None)
         evidence = "<br>↳ " + "<br>↳ ".join(
             f"“{_cell(item['quote'])}” ({_cell(_location([item], sources))})" for item in finding["evidence"]
         ) if finding["evidence"] else ""
+        severity = _cell(finding["severity"] or "Chưa xác định")
+        status = _cell(finding["severity_status"])
+        policy_audit = ""
+        if policy is not None:
+            severity = f"effective policy: {severity} ({status})"
+            model = f"{_cell(policy['model_severity'] or 'Chưa xác định')} ({_cell(policy['model_severity_status'])})"
+            decision_id = _cell(policy["decision_id"]) if policy["decision_id"] else "no approved decision"
+            source_reference = _cell(policy["source_reference"]) if policy["source_reference"] else "—"
+            policy_audit = f"; model: {model}; {decision_id}; source: {source_reference}"
+        else:
+            severity = f"{severity} ({status})"
         rendered.append(
-            f"{_cell(finding['rule'])} — {_cell(finding['severity'] or 'Chưa xác định')} "
-            f"({_cell(finding['severity_status'])}): {_cell(finding['explanation'])} "
-            f"[{_cell(finding.get('question_for_PM') or 'Không có câu hỏi')}]" + evidence
+            f"{_cell(finding['rule'])} — {severity}: {_cell(finding['explanation'])} "
+            f"[{_cell(finding.get('question_for_PM') or 'Không có câu hỏi')}]{policy_audit}" + evidence
         )
     return "<br>".join(rendered)
 
@@ -53,6 +69,7 @@ def write_reports(
     by_id = {item["plan_id"]: item for item in assessments}
     findings_count = sum(len(item.get("findings", [])) for item in assessments)
     affected_count = sum(bool(item.get("findings")) for item in assessments)
+    resolutions = metadata.get("policy_resolution", [])
     comparison = {
         "metadata": metadata,
         "scope": {
@@ -84,6 +101,9 @@ def write_reports(
             "update_evidence": json.dumps(assessment["update_evidence"], ensure_ascii=False),
             "review_reasons": json.dumps(assessment["review_reasons"], ensure_ascii=False),
             "policy_questions": json.dumps(assessment["policy_questions"], ensure_ascii=False),
+            "policy_resolution": json.dumps(
+                [record for record in resolutions if record["plan_id"] == commitment["plan_id"]], ensure_ascii=False
+            ),
         }
         writer.writerow(cast(Any, {key: _display(value) for key, value in row.items()}))
     csv_text = stream.getvalue()
@@ -98,7 +118,10 @@ def write_reports(
             _cell(commitment["plan_id"]), _cell(commitment["planned_commitment"]), quotes,
             _cell(assessment["source_reported_status"] or "Không được báo cáo"),
             _cell(assessment["match_confidence"]), _cell(assessment["reporting_clarity"]),
-            _finding_text(assessment["findings"], sources),
+            _finding_text(
+                assessment["findings"], sources,
+                [record for record in resolutions if record["plan_id"] == commitment["plan_id"]],
+            ),
             f"Kế hoạch: {plan_locations}<br>Cập nhật: {update_locations}",
         )) + " |")
     mentor_lines = ["# Rà soát chất lượng báo cáo tuần", ""]
@@ -151,6 +174,19 @@ def write_run_notes(run_dir: Path, metadata: JsonDict, scope: JsonDict, assessme
         *[f"- Câu hỏi chính sách: {question}" for question in unresolved],
         "- Kiểm tra cấu trúc/trích dẫn không chứng minh tính đầy đủ ngữ nghĩa hoặc việc hoàn thành thực tế.",
     ]
+    if "policy_version" in metadata or "policy_resolution" in metadata:
+        resolutions = metadata.get("policy_resolution", [])
+        lines.extend([
+            "", "## Chính sách mức độ cảnh báo",
+            f"- Policy version: {metadata.get('policy_version', 'unavailable')}",
+            f"- Policy SHA-256: {metadata.get('policy_sha256', 'unavailable')}",
+        ])
+        if not resolutions:
+            lines.append("- Không có finding cần ghi nhận policy resolution.")
+        for resolution in resolutions:
+            if resolution.get("decision_id") is None:
+                lines.append("- no approved decision: mức độ giữ ở đề xuất/chưa xác định theo policy mặc định.")
+            lines.append("- " + json.dumps(resolution, ensure_ascii=False))
     if offline_replay:
         lines.extend([
             "", "## Chế độ kiểm chứng",

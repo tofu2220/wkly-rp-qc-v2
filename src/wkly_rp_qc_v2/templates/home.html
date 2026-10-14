@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Workbooks · Weekly Report QC{% endblock %}
+{% block content %}
+  <p class="eyebrow">Quy trình rà soát</p>
+  <h1>Workbooks</h1>
+  <p class="intro">Tải báo cáo, kiểm tra mapping và chọn phạm vi trước khi chạy replay.</p>
+  <div class="notice notice-info" role="status">Replay offline — response lịch sử, không gọi AI mới.</div>
+
+  <section class="panel" aria-labelledby="upload-title">
+    <h2 id="upload-title">Tải workbook</h2>
+    <form action="/workbooks" method="post" enctype="multipart/form-data" class="upload-form">
+      <label for="workbook">Chọn tệp Excel (.xlsx)</label>
+      <input id="workbook" name="workbook" type="file" accept=".xlsx" required>
+      <button type="submit">Tải và xem preview</button>
+    </form>
+    <p class="hint">Tải lên không tự chạy phân tích.</p>
+  </section>
+
+  {% if conflicts %}
+  <div class="notice notice-warning" role="status">
+    Có {{ conflicts | length }} nhóm nguồn chồng lặp cần chọn riêng; dữ liệu không được tự gộp.
+  </div>
+  {% endif %}
+
+  <section class="panel" aria-labelledby="snapshots-title">
+    <div class="section-heading">
+      <div><p class="eyebrow">Dữ liệu đã lưu</p><h2 id="snapshots-title">Reporting snapshots</h2></div>
+      <a class="button button-secondary" href="/scope">Chọn phạm vi</a>
+    </div>
+    {% if snapshots %}
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Workbook</th><th>Sheet / kỳ</th><th>Mapping</th><th>Trạng thái</th><th>Dòng</th><th></th></tr></thead>
+        <tbody>
+        {% for snapshot in snapshots %}
+          <tr>
+            <td><code>{{ snapshot.workbook_sha256[:12] }}</code><br><span class="hint">{{ snapshot.original_filename }}</span></td>
+            <td>{{ snapshot.sheet_name }}<br><span class="hint">{{ snapshot.chronology_status }}</span></td>
+            <td><span class="status status-{{ snapshot.mapping_status }}">{{ snapshot.mapping_status }}</span></td>
+            <td>{{ snapshot.sheet_state }}</td><td>{{ snapshot.row_count }}</td>
+            <td><a href="/workbooks/{{ snapshot.workbook_id }}">Mở</a></td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+      <p class="empty">Chưa có workbook nào được nhập.</p>
+    {% endif %}
+  </section>
+{% endblock %}

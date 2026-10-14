@@ -49,6 +49,43 @@ The output contains `mentor_review.md`, `comparison.json`, `comparison.csv`, and
 
 An invalid saved response remains invalid: replay preserves failure diagnostics and writes no successful comparison files. It never filters extra assessment objects, fills missing data, or regrades model findings. Input/provenance and saved-response errors exit `2`; local extraction/assessment validation or output errors exit `1`. A successful replay confirms structural/source validity for those historical responses only; it does not evaluate new reports or prove semantic correctness.
 
+## Local browser review
+
+Install the project dependencies and start the local-only web app:
+
+```bash
+uv sync
+uv run wkly-rp-qc-web
+```
+
+Open `http://127.0.0.1:8000`. The app binds only to localhost and stores the SQLite database and uploaded workbook versions under `~/.local/share/wkly-rp-qc-v2/` by default. Use `--data-dir PATH` to choose a different local storage directory, or `--replay-root PATH` to add a directory containing historical replay runs. The default replay root is `./results`.
+
+Uploading a workbook only imports and previews it. Review mapping, draft/period warnings, project aliases, and overlapping sources before selecting a scope. A replay is offered only when its normalized-input hash and scope match; no match is shown as **no AI result available**, never as a clean pass. This release runs offline replay only: it does not load provider credentials or call a model. Stop the server with Ctrl+C.
+
+## Severity policy and provenance
+
+Both `compare` and `replay` accept an optional `--policy PATH`. If omitted, the packaged `demo-policy-v1` registry is used. It contains the five supported rule versions and **no confirmed decisions**. An invalid explicit policy stops the run; the CLI does not silently fall back to the packaged policy.
+
+`assessment_response.json` retains the original model response. `comparison.json` contains effective assessments and a `metadata.policy_resolution` audit; `comparison.csv`, `mentor_review.md`, and `run_notes.md` distinguish effective policy values from model values and show the decision source. With the default policy, a non-null model severity remains at its model value but is labeled `proposed`; a null severity remains `unresolved`. `requires_review` is recalculated on the effective copy, and the original assessment is strictly validated before policy is applied.
+
+To use a documented approval, provide a versioned JSON registry with a decision record for the rule or exact case. A `confirmed` decision must use `basis: "explicit_approval"` and include nonempty `source_reference`, `approved_by`, and an ISO `approved_at` date or datetime. These fields record the operator-supplied provenance; the application does not independently verify the named person's authority. Only enter a real confirmed decision when the corresponding approval is actually documented. A PM accepting an individual finding is not approval of a rule's general severity.
+
+Case decisions match the exact project, role, previous/current sheet names, and an exact accepted plan quote. They do not use run-local `plan_id`, fuzzy text matching, `[M]` labels, or filenames as approval evidence. If an exact quote identifies multiple commitments in the selected run, policy resolution fails as ambiguous rather than applying the decision to both.
+
+Example of supplying a separate local registry:
+
+```bash
+uv run wkly-rp-qc-v2 replay \
+  --input download/1-raw/normalized_rows.json \
+  --previous "BC Tuần 31.08 - 05.09" \
+  --current "BC Tuần 07.09 - 12.09" \
+  --project "SMART PARKING" \
+  --role "PTSP" \
+  --responses results/smart-parking/20261012T031440747089Z \
+  --policy ./local-policy.json \
+  --output results/offline-review
+```
+
 ## Results and failure behavior
 
 Assessment evidence follows a week-specific contract: extracted commitment `plan_evidence` comes from the previous week; assessment `update_evidence` cites current-week sources only and may be empty; finding evidence may compare previous-week plan quotations with current-week reporting. Every non-`Missing Closure` finding must cite at least one current-week source. `Missing Closure` cites the previous-week plan, because absence itself has no quotation. Source IDs are resolved using their supplied week metadata, not their names.
