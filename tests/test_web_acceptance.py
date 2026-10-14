@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import re
 import time
 import unittest
 from pathlib import Path
@@ -44,6 +45,18 @@ class BrowserAcceptanceTests(unittest.TestCase):
                     }, follow_redirects=False)
                     self.assertEqual(upload.status_code, 303)
                     workbook_id = int(upload.headers["location"].rsplit("/", 1)[1])
+                    preview = client.get(f"/workbooks/{workbook_id}")
+                    self.assertEqual(preview.status_code, 200)
+                    self.assertIn("Template", preview.text)
+                    self.assertIn("Kỳ", preview.text)
+                    source_rows = re.search(
+                        r"(?s)<details([^>]*)>\s*<summary>Source rows and evidence locations</summary>",
+                        preview.text,
+                    )
+                    self.assertIsNotNone(source_rows)
+                    self.assertNotIn("open", source_rows.group(1).split())
+                    self.assertIn('class="source-value"', preview.text)
+                    self.assertIn('class="source-ref"', preview.text)
                     snapshots = [item for item in list_snapshots(settings.database_path) if item["workbook_id"] == workbook_id]
                     previous = next(item for item in snapshots if item["sheet_name"] == "BC Tuần 31.08 - 05.09")
                     current = next(item for item in snapshots if item["sheet_name"] == "BC Tuần 07.09 - 12.09")
