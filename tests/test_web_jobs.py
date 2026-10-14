@@ -128,7 +128,7 @@ class WebJobStoreTests(unittest.TestCase):
             ) for index in (1, 2)]
 
             save_finding_review(database, jobs[0], "P001", 0, "accepted", "Source confirms the checkpoint.")
-            save_finding_review(database, jobs[1], "P001", 0, "clarification_needed", None)
+            save_finding_review(database, jobs[1], "P001", 0, "clarification_needed", "Missing evidence details.")
             save_finding_review(database, jobs[0], "P001", 0, "rejected", "Recheck after mentor review.")
 
             first = list_finding_reviews(database, jobs[0])
@@ -137,7 +137,54 @@ class WebJobStoreTests(unittest.TestCase):
             self.assertEqual(first[0]["state"], "rejected")
             self.assertEqual(first[0]["note"], "Recheck after mentor review.")
             self.assertEqual(second[0]["state"], "clarification_needed")
-            self.assertIsNone(second[0]["note"])
+            self.assertEqual(second[0]["note"], "Missing evidence details.")
+
+    def test_rejected_review_requires_nonblank_note_before_persistence(self):
+        with tempfile.TemporaryDirectory() as temp:
+            database = Path(temp) / "store.sqlite3"
+            workbook_id, previous_id, current_id = seed_store(database)
+            job_id = create_job(
+                database, workbook_id=workbook_id, previous_snapshot_id=previous_id,
+                current_snapshot_id=current_id, project_label="SMART PARKING", role="PTSP", aliases=[],
+                mode="replay", replay_bundle_id=None,
+            )
+
+            for note in (None, "", " \t\n "):
+                with self.subTest(note=note):
+                    with self.assertRaisesRegex(ValueError, "note"):
+                        save_finding_review(database, job_id, "P001", 0, "rejected", note)
+                    self.assertEqual(list_finding_reviews(database, job_id), [])
+
+    def test_clarification_needed_review_requires_nonblank_note_before_persistence(self):
+        with tempfile.TemporaryDirectory() as temp:
+            database = Path(temp) / "store.sqlite3"
+            workbook_id, previous_id, current_id = seed_store(database)
+            job_id = create_job(
+                database, workbook_id=workbook_id, previous_snapshot_id=previous_id,
+                current_snapshot_id=current_id, project_label="SMART PARKING", role="PTSP", aliases=[],
+                mode="replay", replay_bundle_id=None,
+            )
+
+            for note in (None, "", " \t\n "):
+                with self.subTest(note=note):
+                    with self.assertRaisesRegex(ValueError, "note"):
+                        save_finding_review(database, job_id, "P001", 0, "clarification_needed", note)
+                    self.assertEqual(list_finding_reviews(database, job_id), [])
+
+    def test_accepted_review_note_remains_optional(self):
+        with tempfile.TemporaryDirectory() as temp:
+            database = Path(temp) / "store.sqlite3"
+            workbook_id, previous_id, current_id = seed_store(database)
+            job_id = create_job(
+                database, workbook_id=workbook_id, previous_snapshot_id=previous_id,
+                current_snapshot_id=current_id, project_label="SMART PARKING", role="PTSP", aliases=[],
+                mode="replay", replay_bundle_id=None,
+            )
+
+            save_finding_review(database, job_id, "P001", 0, "accepted", None)
+
+            self.assertEqual(list_finding_reviews(database, job_id)[0]["state"], "accepted")
+            self.assertIsNone(list_finding_reviews(database, job_id)[0]["note"])
 
     def test_invalid_review_state_is_rejected(self):
         with tempfile.TemporaryDirectory() as temp:
