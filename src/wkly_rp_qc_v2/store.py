@@ -751,6 +751,8 @@ def save_finding_review(
         raise ValueError("Finding review requires a plan ID and nonnegative index")
     if note is not None and not isinstance(note, str):
         raise ValueError("Finding review note must be text or null")
+    if state in {"rejected", "clarification_needed"} and (note is None or not note.strip()):
+        raise ValueError(f"Finding review state {state} requires a non-blank note")
     with _connect(Path(database_path)) as connection:
         if connection.execute("SELECT 1 FROM analysis_jobs WHERE job_id=?", (job_id,)).fetchone() is None:
             raise ValueError(f"Unknown job ID: {job_id}")
