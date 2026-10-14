@@ -29,6 +29,32 @@ EXPECTED_HASHES = {
 }
 
 P007_ID = "smart-parking-P007-candidate-finding"
+CASE_SCOPE = {
+    "smart-parking-P007-candidate-finding": ("SMART PARKING", "P007"),
+    "smart-parking-P003-candidate-no-finding": ("SMART PARKING", "P003"),
+    "depot-gsm-P002-candidate-finding": ("DEPOT GSM", "P002"),
+    "depot-gsm-P001-candidate-no-finding": ("DEPOT GSM", "P001"),
+    "anat-cong-truong-P002-candidate-finding": ("ANAT Công trường", "P002"),
+    "anat-cong-truong-P003-candidate-no-finding": ("ANAT Công trường", "P003"),
+}
+REQUIRED_CELL_KEYS = {
+    "smart-parking-P007-candidate-finding": {
+        ("BC Tuần 31.08 - 05.09", cell) for cell in ("F64", "E64", "G64", "C61", "C64", "D64", "H64")
+    } | {("BC Tuần 07.09 - 12.09", cell) for cell in ("F52", "G52", "H52", "D49", "D52", "I52")},
+}
+REQUIRED_CELL_KEYS["smart-parking-P003-candidate-no-finding"] = REQUIRED_CELL_KEYS[P007_ID]
+for case_id in ("depot-gsm-P002-candidate-finding", "depot-gsm-P001-candidate-no-finding"):
+    REQUIRED_CELL_KEYS[case_id] = {
+        ("BC Tuần 31.08 - 05.09", cell) for cell in ("F20", "E20", "G20", "C17", "C20", "D20", "H20")
+    } | {("BC Tuần 07.09 - 12.09", cell) for cell in ("F20", "G20", "H20", "D17", "D20", "I20")}
+for case_id in ("anat-cong-truong-P002-candidate-finding", "anat-cong-truong-P003-candidate-no-finding"):
+    REQUIRED_CELL_KEYS[case_id] = {
+        ("BC Tuần 20.07 - 24.07", cell) for cell in ("D24", "C24", "E24", "B22", "B24", "F24")
+    } | {
+        ("BC Tuần 27.07 - 01.08 ", f"{column}{row}")
+        for row in range(23, 27)
+        for column in ("B", "C", "D", "E", "F")
+    }
 LABEL_MARKERS = (
     "candidate-finding",
     "candidate-no-finding",
@@ -171,6 +197,10 @@ def validate_packet(ledger: dict[str, Any], expected_stage: str) -> dict[str, An
     if actual_ids != expected_ids:
         raise ValueError(f"case dispositions/order: expected {expected_ids}, got {actual_ids}")
     for case in packet_cases:
+        keys = set(case.get("source_cell_keys", []))
+        expected_keys = {f"{sheet}!{cell}" for sheet, cell in REQUIRED_CELL_KEYS[case["case_id"]]}
+        if keys != expected_keys:
+            raise ValueError(f"{case.get('case_id')}: source_cell_keys do not match the complete named inventory")
         if case.get("ground_truth_status") != "needs_business_review":
             raise ValueError(f"{case.get('case_id')}: ground_truth_status was promoted")
         response = case.get("preliminary_response")
@@ -185,8 +215,9 @@ def validate_packet(ledger: dict[str, Any], expected_stage: str) -> dict[str, An
 
 
 def build_chat_projection(case: dict[str, Any]) -> dict[str, Any]:
-    if case.get("case_id") != P007_ID:
-        raise ValueError("tracer projection is restricted to SMART PARKING P007")
+    case_id = case.get("case_id")
+    if case_id not in CASE_SCOPE:
+        raise ValueError(f"unknown case for neutral projection: {case_id!r}")
     projection = case.get("chat_projection")
     if not isinstance(projection, dict):
         raise ValueError("P007 neutral chat projection is missing")
@@ -194,9 +225,10 @@ def build_chat_projection(case: dict[str, Any]) -> dict[str, Any]:
     for marker in LABEL_MARKERS:
         if marker.lower() in encoded:
             raise ValueError(f"neutral chat projection reveals a candidate label: {marker}")
-    if projection.get("title") != "SMART PARKING · P007":
+    project, plan_id = CASE_SCOPE[case_id]
+    if projection.get("title") != f"{project} · {plan_id}":
         raise ValueError("projection title must be the neutral project + plan identifier")
-    if projection.get("question") != "Theo bạn có lỗi / không lỗi / chưa rõ? Lý do ngắn là gì?":
+    if not str(projection.get("question", "")).startswith("Theo bạn có lỗi / không lỗi / chưa rõ? Lý do ngắn là gì?"):
         raise ValueError("projection must ask for a preliminary judgment only after source evidence")
     source_rows = projection.get("source_rows")
     if not isinstance(source_rows, list) or len(source_rows) != 2:
@@ -218,11 +250,7 @@ def verify_p007_workbook_source(manifest: dict[str, Any], packet: dict[str, Any]
             ("BC Tuần 07.09 - 12.09", "G52"): current["G52"].value,
             ("BC Tuần 07.09 - 12.09", "H52"): current["H52"].value,
         }
-        recorded_cells = {
-            (cell.get("sheet"), cell.get("cell")): cell
-            for cell in packet.get("source_cells", [])
-            if cell.get("case_id") == P007_ID
-        }
+        recorded_cells = canonical_source_cells(packet, P007_ID)
         for (sheet, coordinate), raw_value in expected_cells.items():
             record = recorded_cells.get((sheet, coordinate))
             if record is None:
@@ -233,8 +261,65 @@ def verify_p007_workbook_source(manifest: dict[str, Any], packet: dict[str, Any]
                 raise ValueError(f"{sheet}!{coordinate}: blank/present state is wrong")
         if expected_cells[("BC Tuần 31.08 - 05.09", "F64")] is None:
             raise ValueError("P007 prior-week plan source is blank")
+        for record in packet["cases"][0].get("source_cells", []):
+            key = (record.get("sheet"), record.get("cell"))
+            canonical = recorded_cells.get(key)
+            if canonical is None or canonical.get("raw_value") != record.get("raw_value"):
+                raise ValueError(f"P007 case-local source copy differs from canonical inventory at {key}")
     finally:
         workbook.close()
+
+
+def verify_named_cell_inventory(packet: dict[str, Any]) -> None:
+    per_case = {case_id: canonical_source_cells(packet, case_id) for case_id in CASE_SCOPE}
+    workbook = load_workbook(ROOT / "docs/Khối SMC_Báo cáo tuần chi tiết.xlsx", read_only=False, data_only=False, keep_links=False)
+    try:
+        if "C64:D64" not in {str(item) for item in workbook["BC Tuần 31.08 - 05.09"].merged_cells.ranges}:
+            raise ValueError("SMART PARKING PTSP role merge C64:D64 no longer matches the packet source map")
+        if "C20:D20" not in {str(item) for item in workbook["BC Tuần 31.08 - 05.09"].merged_cells.ranges}:
+            raise ValueError("DEPOT PTSP role merge C20:D20 no longer matches the packet source map")
+        for case_id, expected_keys in REQUIRED_CELL_KEYS.items():
+            actual_keys = set(per_case[case_id])
+            missing = sorted(expected_keys - actual_keys)
+            if missing:
+                raise ValueError(f"{case_id}: missing named source cells {missing}")
+            for sheet, coordinate in expected_keys:
+                record = per_case[case_id][(sheet, coordinate)]
+                raw_value = workbook[sheet][coordinate].value
+                expected_presence = "blank" if raw_value is None else "present"
+                expected_type = "null" if raw_value is None else "string" if isinstance(raw_value, str) else type(raw_value).__name__
+                if record.get("raw_value") != raw_value:
+                    raise ValueError(f"{case_id} {sheet}!{coordinate}: raw cell value mismatch")
+                if record.get("presence") != expected_presence or record.get("raw_type") != expected_type:
+                    raise ValueError(f"{case_id} {sheet}!{coordinate}: raw type/presence mismatch")
+    finally:
+        workbook.close()
+
+
+def canonical_source_cells(packet: dict[str, Any], case_id: str) -> dict[tuple[str, str], dict[str, Any]]:
+    selected: dict[tuple[str, str], dict[str, Any]] = {}
+    for record in packet.get("source_cells", []):
+        owners = set(record.get("case_ids", []))
+        if record.get("case_id"):
+            owners.add(record["case_id"])
+        if case_id not in owners:
+            continue
+        key = (record.get("sheet"), record.get("cell"))
+        previous = selected.get(key)
+        revision = record.get("revision", 1)
+        previous_revision = previous.get("revision", 1) if previous else -1
+        shared_record = bool(record.get("case_ids"))
+        previous_shared = bool(previous and previous.get("case_ids"))
+        if previous is not None and revision == previous_revision and previous.get("raw_value") != record.get("raw_value"):
+            if shared_record and not previous_shared:
+                selected[key] = record
+                continue
+            if previous_shared and not shared_record:
+                continue
+            raise ValueError(f"{case_id} {key}: same-revision source cell records disagree")
+        if previous is None or revision >= previous_revision:
+            selected[key] = record
+    return selected
 
 
 def run_artifact_gate(expected_stage: str, *, require_confirmation: bool = False) -> int:
@@ -244,6 +329,8 @@ def run_artifact_gate(expected_stage: str, *, require_confirmation: bool = False
     manifest = validate_packet(ledger, expected_stage)
     if expected_stage in {"tracer", "six_case"}:
         verify_p007_workbook_source(manifest, ledger)
+    if expected_stage == "six_case":
+        verify_named_cell_inventory(ledger)
     if expected_stage == "tracer":
         projection = build_chat_projection(ledger["cases"][0])
         if not projection.get("source_rows"):
@@ -252,8 +339,7 @@ def run_artifact_gate(expected_stage: str, *, require_confirmation: bool = False
             raise ValueError("packet title/version marker is missing")
     if expected_stage == "six_case":
         for case in ledger["cases"]:
-            if case.get("chat_projection"):
-                build_chat_projection(case)
+            build_chat_projection(case)
     if expected_stage == "review_recorded":
         events = ledger.get("events", [])
         for case in ledger["cases"]:
@@ -276,20 +362,31 @@ def run_artifact_gate(expected_stage: str, *, require_confirmation: bool = False
 class DispositionPacketTests(unittest.TestCase):
     def setUp(self):
         self.assertTrue(PACKET_PATH.is_file(), f"required packet missing: {PACKET_PATH}")
+        self.stage = os.environ.get("DISPOSITION_EXPECT_STAGE", "tracer")
 
     def test_tracer_evidence_to_unresolved(self):
         _, ledger = load_packet()
-        manifest = validate_packet(ledger, "tracer")
-        verify_p007_workbook_source(manifest, ledger)
-        projection = build_chat_projection(ledger["cases"][0])
-        self.assertEqual(projection["source_rows"][0]["week"], "previous")
-        self.assertEqual(projection["source_rows"][1]["week"], "current")
-        self.assertEqual(ledger["cases"][0]["preliminary_response"]["status"], "unresolved")
+        manifest = validate_packet(ledger, self.stage)
+        if self.stage in {"tracer", "six_case"}:
+            verify_p007_workbook_source(manifest, ledger)
+        if self.stage == "six_case":
+            verify_named_cell_inventory(ledger)
+            for case in ledger["cases"]:
+                projection = build_chat_projection(case)
+                self.assertEqual(projection["source_rows"][0]["week"], "previous")
+                self.assertEqual(projection["source_rows"][1]["week"], "current")
+        else:
+            projection = build_chat_projection(ledger["cases"][0])
+            self.assertEqual(projection["source_rows"][0]["week"], "previous")
+            self.assertEqual(projection["source_rows"][1]["week"], "current")
+        self.assertTrue(all(case["preliminary_response"]["status"] == "unresolved" for case in ledger["cases"]))
 
     def test_frozen_inventory_and_input_integrity(self):
         _, ledger = load_packet()
-        manifest = validate_packet(ledger, "tracer")
+        manifest = validate_packet(ledger, self.stage)
         self.assertEqual(len(manifest["cases"]), 6)
+        expected = manifest["cases"][:1] if self.stage == "tracer" else manifest["cases"]
+        self.assertEqual([case["case_id"] for case in ledger["cases"]], [case["case_id"] for case in expected])
 
 
 if __name__ == "__main__":
