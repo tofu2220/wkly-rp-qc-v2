@@ -49,11 +49,14 @@ class BrowserAcceptanceTests(unittest.TestCase):
                     self.assertEqual(preview.status_code, 200)
                     self.assertIn("Template", preview.text)
                     self.assertIn("Kỳ", preview.text)
+                    self.assertIn('class="status status-', preview.text)
+                    self.assertIn('class="warnings"', preview.text)
                     source_rows = re.search(
                         r"(?s)<details([^>]*)>\s*<summary>Source rows and evidence locations</summary>",
                         preview.text,
                     )
                     self.assertIsNotNone(source_rows)
+                    self.assertLess(preview.text.index('class="warnings"'), source_rows.start())
                     self.assertNotIn("open", source_rows.group(1).split())
                     self.assertIn('class="source-value"', preview.text)
                     self.assertIn('class="source-ref"', preview.text)
