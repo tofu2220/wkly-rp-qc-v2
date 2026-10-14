@@ -60,6 +60,8 @@ class BrowserAcceptanceTests(unittest.TestCase):
                     self.assertNotIn("open", source_rows.group(1).split())
                     self.assertIn('class="source-value"', preview.text)
                     self.assertIn('class="source-ref"', preview.text)
+                    self.assertRegex(preview.text, r'<span class="source-value">(?!—)[^<]+</span>')
+                    self.assertRegex(preview.text, r'<code class="source-ref">[A-Z]+[0-9]+</code>')
                     snapshots = [item for item in list_snapshots(settings.database_path) if item["workbook_id"] == workbook_id]
                     previous = next(item for item in snapshots if item["sheet_name"] == "BC Tuần 31.08 - 05.09")
                     current = next(item for item in snapshots if item["sheet_name"] == "BC Tuần 07.09 - 12.09")
