@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import copy
 import json
 import os
 import re
+import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
@@ -74,6 +76,8 @@ def sha256_file(path: Path) -> str:
 
 
 def load_packet(path: Path = PACKET_PATH) -> tuple[str, dict[str, Any]]:
+    if path.stat().st_size > 5 * 1024 * 1024:
+        raise ValueError(f"{path}: exceeds maximum packet size of 5242880 bytes")
     text = path.read_text(encoding="utf-8")
     matches = re.findall(r"```disposition-ledger\s*\n(.*?)\n```", text, flags=re.DOTALL)
     if len(matches) != 1:
@@ -126,6 +130,129 @@ def disposition_payload(ledger: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def validate_pending_records(ledger: dict[str, Any]) -> None:
+    records = ledger.get("pending_records")
+    if not isinstance(records, list):
+        raise ValueError("pending_records must be a list")
+    by_id = {record.get("record_id"): record for record in records}
+    required = {"pending-unfinished", "pending-semantic-severity", "pending-depot-alias"}
+    if len(records) != 3 or set(by_id) != required:
+        raise ValueError(f"pending record set must be exactly {sorted(required)}")
+    for record_id, record in by_id.items():
+        if record.get("status") != "unresolved":
+            raise ValueError(f"{record_id}: unresolved business authority cannot be promoted")
+        if not record.get("missing_information") or not record.get("follow_up_question"):
+            raise ValueError(f"{record_id}: missing information and a follow-up question are required")
+        if any(record.get(field) is not None for field in ("respondent", "owner", "deadline", "approved_by", "approved_at")):
+            raise ValueError(f"{record_id}: unspecified respondent/owner/deadline/approval must remain null")
+        if not isinstance(record.get("case_links"), list) or not record["case_links"]:
+            raise ValueError(f"{record_id}: at least one case link is required")
+    unfinished = by_id["pending-unfinished"]
+    alternatives = unfinished.get("alternatives")
+    expected_sources = ["REQ-unfinished-state-mentor", "REQ-unfinished-state-research"]
+    if not isinstance(alternatives, list) or [item.get("source_id") for item in alternatives] != expected_sources:
+        raise ValueError("pending-unfinished must preserve mentor and research alternatives separately")
+    if alternatives[0].get("criterion") == alternatives[1].get("criterion"):
+        raise ValueError("pending-unfinished alternatives were merged or made identical")
+    semantic = by_id["pending-semantic-severity"]
+    if semantic.get("business_decision") is not None or semantic.get("severity_approval") is not None:
+        raise ValueError("pending semantic/severity authority cannot contain an invented approval")
+    if semantic.get("critical_executable") is not False:
+        raise ValueError("unapproved Critical proposals must remain non-executable")
+    alias = by_id["pending-depot-alias"]
+    claim = alias.get("reported_claim")
+    if not isinstance(claim, dict) or claim.get("is_original_authority_evidence") is not False:
+        raise ValueError("reported alias text cannot be treated as original approval evidence")
+    if alias.get("decision") is not None:
+        raise ValueError("DEPOT alias decision must remain unset without original scoped authority")
+    valid_case_ids = {case.get("case_id") for case in ledger.get("cases", [])}
+    for record_id, record in by_id.items():
+        if not set(record["case_links"]) <= valid_case_ids:
+            raise ValueError(f"{record_id}: pending record links to an unknown frozen case")
+    for case in ledger.get("cases", []):
+        links = set(case.get("pending_record_links", []))
+        if not links <= required or "pending-semantic-severity" not in links:
+            raise ValueError(f"{case.get('case_id')}: pending record links are missing or unknown")
+        if case.get("case_id", "").startswith("depot-"):
+            if "pending-depot-alias" not in links:
+                raise ValueError(f"{case.get('case_id')}: conditional DEPOT alias link is missing")
+            if case.get("conditional_cross_period") is not True or case.get("replay_status") != "not_established":
+                raise ValueError(f"{case.get('case_id')}: DEPOT cross-period/replay state was promoted")
+
+
+def validate_markdown_consistency(text: str, ledger: dict[str, Any]) -> None:
+    for record_id in ("pending-unfinished", "pending-semantic-severity", "pending-depot-alias"):
+        if f"### `{record_id}`" not in text:
+            raise ValueError(f"Markdown packet is missing shared pending record {record_id}")
+    for case in ledger.get("cases", []):
+        if case.get("neutral_title") not in text:
+            raise ValueError(f"Markdown index is missing neutral case title {case.get('neutral_title')}")
+    if "Chưa có phản hồi" not in text:
+        raise ValueError("Markdown must disclose that no human response has been recorded")
+    records = {record["record_id"]: record for record in ledger.get("pending_records", [])}
+    for alternative in records.get("pending-unfinished", {}).get("alternatives", []):
+        if alternative.get("criterion") not in text:
+            raise ValueError(f"Markdown is missing attributed unfinished criterion {alternative.get('source_id')}")
+    alias_claim = records.get("pending-depot-alias", {}).get("reported_claim", {}).get("text")
+    if alias_claim and alias_claim not in text:
+        raise ValueError("Markdown must preserve the alias claim as a reported claim")
+
+
+def validate_review_events(ledger: dict[str, Any]) -> None:
+    events = ledger.get("events")
+    if not isinstance(events, list):
+        raise ValueError("events must be a list")
+    if ledger.get("stage") != "review_recorded":
+        if events:
+            raise ValueError("chat/review events cannot be fabricated before the review checkpoint")
+        return
+    expected_order = [case["case_id"] for case in ledger.get("cases", [])]
+    by_case: dict[str, list[dict[str, Any]]] = {case_id: [] for case_id in expected_order}
+    ordinals = []
+    for event in events:
+        case_id = event.get("case_id")
+        if case_id not in by_case:
+            raise ValueError(f"review event links to unknown case {case_id!r}")
+        if type(event.get("ordinal")) is not int:
+            raise ValueError("review events require an integer chronological ordinal")
+        ordinals.append(event["ordinal"])
+        by_case[case_id].append(event)
+    if ordinals != sorted(ordinals) or len(ordinals) != len(set(ordinals)):
+        raise ValueError("review event ordinals must be strictly increasing")
+    seen_case_order = []
+    for case_id in expected_order:
+        entries = by_case[case_id]
+        kinds = [event.get("kind") for event in entries]
+        if not entries:
+            raise ValueError(f"{case_id}: final review stage has no actual interaction event")
+        if kinds.count("source_offered") != 1:
+            raise ValueError(f"{case_id}: requires exactly one source_offered event")
+        completion_kind = "preliminary_response" if kinds.count("preliminary_response") == 1 else "deferred_by_user"
+        if kinds.count(completion_kind) != 1 or ("preliminary_response" in kinds and "deferred_by_user" in kinds):
+            raise ValueError(f"{case_id}: requires one actual response or explicit user deferral")
+        offered = kinds.index("source_offered")
+        completed = kinds.index(completion_kind)
+        if offered >= completed:
+            raise ValueError(f"{case_id}: source must be offered before its response/deferral")
+        if "post_response_disclosure" in kinds:
+            if completion_kind != "preliminary_response" or kinds.index("post_response_disclosure") <= completed:
+                raise ValueError(f"{case_id}: candidate disclosure must follow its own actual preliminary response")
+        if completion_kind == "deferred_by_user" and "post_response_disclosure" in kinds:
+            raise ValueError(f"{case_id}: label disclosure must remain withheld after deferral")
+        seen_case_order.extend([case_id] * len(entries))
+    actual_first_seen = list(dict.fromkeys(seen_case_order))
+    if actual_first_seen != expected_order:
+        raise ValueError("review cases must follow the six-case frozen order")
+
+
+def resign_current_revision(ledger: dict[str, Any]) -> None:
+    payload = disposition_payload(ledger)
+    digest = canonical_digest(payload)
+    ledger["revisions"][-1]["payload"] = payload
+    ledger["revisions"][-1]["digest"] = digest
+    ledger["payload_digest"] = digest
+
+
 def validate_stage(ledger: dict[str, Any], expected_stage: str) -> None:
     if ledger.get("stage") != expected_stage:
         raise ValueError(f"ledger stage: expected {expected_stage!r}, got {ledger.get('stage')!r}")
@@ -161,16 +288,34 @@ def validate_frozen_inputs(ledger: dict[str, Any]) -> dict[str, Any]:
     return manifest
 
 
+def validate_packet_limits(ledger: dict[str, Any]) -> None:
+    limits = {"source_cells": 200, "events": 200, "revisions": 50}
+    for key, maximum in limits.items():
+        value = ledger.get(key)
+        if not isinstance(value, list):
+            raise ValueError(f"{key} must be a list")
+        if len(value) > maximum:
+            raise ValueError(f"{key} limit exceeded: {len(value)} entries; maximum {maximum}")
+
+
 def validate_revisions(ledger: dict[str, Any]) -> None:
     revisions = ledger.get("revisions")
     if not isinstance(revisions, list) or not revisions:
         raise ValueError("packet revisions must contain at least one payload snapshot")
     parent: str | None = None
+    current_payload: dict[str, Any] | None = None
     for index, revision in enumerate(revisions):
-        snapshot = revision.get("payload")
-        if not isinstance(snapshot, dict):
+        revision_payload = revision.get("payload")
+        if not isinstance(revision_payload, dict):
             raise ValueError(f"revision {index}: missing payload object")
-        digest = canonical_digest(snapshot)
+        delta = revision_payload.get("$patch")
+        if delta is not None:
+            if current_payload is None or not isinstance(delta, dict):
+                raise ValueError(f"revision {index}: patch has no prior snapshot or is malformed")
+            current_payload = {**current_payload, **delta}
+        else:
+            current_payload = revision_payload
+        digest = canonical_digest(current_payload)
         if revision.get("digest") != digest:
             raise ValueError(f"revision {index}: payload digest mismatch")
         if revision.get("parent_digest") != parent:
@@ -178,7 +323,7 @@ def validate_revisions(ledger: dict[str, Any]) -> None:
         parent = digest
     if ledger.get("payload_digest") != parent:
         raise ValueError("current payload_digest does not match the latest revision")
-    if revisions[-1].get("payload") != disposition_payload(ledger):
+    if current_payload != disposition_payload(ledger):
         raise ValueError("latest revision snapshot differs from current mutable disposition state")
 
 
@@ -186,6 +331,7 @@ def validate_packet(ledger: dict[str, Any], expected_stage: str) -> dict[str, An
     if ledger.get("schema_version") != 1 or ledger.get("packet_version") != "review-dispositions-v1":
         raise ValueError("unsupported disposition packet version")
     validate_stage(ledger, expected_stage)
+    validate_packet_limits(ledger)
     manifest = validate_frozen_inputs(ledger)
     validate_revisions(ledger)
     packet_cases = ledger.get("cases")
@@ -211,6 +357,14 @@ def validate_packet(ledger: dict[str, Any], expected_stage: str) -> dict[str, An
                 raise ValueError(f"{case.get('case_id')}: unresolved status needs missing information and follow-up")
         if case.get("mentor_decision", {}).get("status") != "pending":
             raise ValueError(f"{case.get('case_id')}: mentor decision must remain pending")
+        if expected_stage in {"six_case", "pending_ready", "review_recorded"}:
+            build_chat_projection(case)
+    if ledger.get("pending_records"):
+        validate_pending_records(ledger)
+    validate_review_events(ledger)
+    if expected_stage in {"pending_ready", "review_recorded"}:
+        validate_pending_records(ledger)
+    validate_markdown_consistency(PACKET_PATH.read_text(encoding="utf-8"), ledger)
     return manifest
 
 
@@ -418,6 +572,110 @@ class DispositionPacketTests(unittest.TestCase):
         _, ledger = load_packet()
         validate_packet(ledger, self.stage)
         self.assertEqual(ledger["payload_digest"], ledger["revisions"][-1]["digest"])
+
+    def test_unfinished_alternatives_remain_separate(self):
+        _, ledger = load_packet()
+        validate_pending_records(ledger)
+        records = {record.get("record_id"): record for record in ledger.get("pending_records", [])}
+        self.assertIn("pending-unfinished", records)
+        self.assertEqual(records["pending-unfinished"]["status"], "unresolved")
+        alternatives = records["pending-unfinished"]["alternatives"]
+        self.assertEqual([item["source_id"] for item in alternatives], ["REQ-unfinished-state-mentor", "REQ-unfinished-state-research"])
+        self.assertNotEqual(alternatives[0]["criterion"], alternatives[1]["criterion"])
+
+    def test_authority_separation_and_no_critical_promotion(self):
+        _, ledger = load_packet()
+        validate_pending_records(ledger)
+        record = next(item for item in ledger["pending_records"] if item["record_id"] == "pending-semantic-severity")
+        self.assertIsNone(record["business_decision"])
+        self.assertIsNone(record["severity_approval"])
+        self.assertFalse(record["critical_executable"])
+        self.assertTrue(all(case["mentor_decision"]["status"] == "pending" for case in ledger["cases"]))
+
+    def test_depot_alias_is_conditional_without_original_authority(self):
+        _, ledger = load_packet()
+        validate_pending_records(ledger)
+        record = next(item for item in ledger["pending_records"] if item["record_id"] == "pending-depot-alias")
+        self.assertFalse(record["reported_claim"]["is_original_authority_evidence"])
+        self.assertIsNone(record["decision"])
+        for case in ledger["cases"]:
+            if case["case_id"].startswith("depot-"):
+                self.assertTrue(case["conditional_cross_period"])
+                self.assertEqual(case["replay_status"], "not_established")
+
+    def test_review_event_sequence_has_no_fabricated_interaction(self):
+        _, ledger = load_packet()
+        self.assertEqual(ledger["stage"], self.stage)
+        self.assertEqual(ledger["events"], [])
+        validate_review_events(ledger)
+
+    def test_record_confirmation_is_not_fabricated(self):
+        _, ledger = load_packet()
+        self.assertFalse(any(event.get("kind") == "record_confirmation" for event in ledger["events"]))
+        with self.assertRaises(ValueError):
+            run_artifact_gate(self.stage, require_confirmation=True)
+
+    def test_negative_packet_mutations_fail_closed(self):
+        _, ledger = load_packet()
+        mutations = []
+
+        merged_alternatives = copy.deepcopy(ledger)
+        merged_alternatives["pending_records"][0]["alternatives"][1]["criterion"] = merged_alternatives["pending_records"][0]["alternatives"][0]["criterion"]
+        mutations.append(("merged unfinished alternatives", merged_alternatives))
+
+        promoted_severity = copy.deepcopy(ledger)
+        promoted_severity["pending_records"][1]["critical_executable"] = True
+        promoted_severity["pending_records"][1]["severity_approval"] = {"status": "confirmed"}
+        mutations.append(("unapproved severity promotion", promoted_severity))
+
+        promoted_alias = copy.deepcopy(ledger)
+        promoted_alias["pending_records"][2]["reported_claim"]["is_original_authority_evidence"] = True
+        promoted_alias["pending_records"][2]["decision"] = "confirmed"
+        mutations.append(("reported alias promoted to proof", promoted_alias))
+
+        missing_link = copy.deepcopy(ledger)
+        missing_link["cases"][2]["pending_record_links"].remove("pending-depot-alias")
+        mutations.append(("DEPOT alias link removed", missing_link))
+
+        for label, mutation in mutations:
+            with self.subTest(label=label):
+                resign_current_revision(mutation)
+                with self.assertRaises(ValueError):
+                    validate_packet(mutation, self.stage)
+
+    def test_packet_size_limit_rejects_oversized_input(self):
+        with tempfile.TemporaryDirectory() as directory:
+            oversized = Path(directory) / "oversized.md"
+            oversized.write_text("x" * (5 * 1024 * 1024 + 1), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "maximum packet size"):
+                load_packet(oversized)
+
+    def test_source_cell_limit_rejects_overflow(self):
+        _, ledger = load_packet()
+        mutation = copy.deepcopy(ledger)
+        mutation["source_cells"] = mutation["source_cells"] + [
+            {"case_id": "smart-parking-P007-candidate-finding", "sheet": "invalid", "cell": f"X{i}", "raw_value": None}
+            for i in range(201)
+        ]
+        resign_current_revision(mutation)
+        with self.assertRaisesRegex(ValueError, "source_cells limit"):
+            validate_packet(mutation, self.stage)
+
+        mutation = copy.deepcopy(ledger)
+        mutation["events"] = [{}] * 201
+        resign_current_revision(mutation)
+        with self.assertRaisesRegex(ValueError, "events limit"):
+            validate_packet(mutation, self.stage)
+
+        mutation = copy.deepcopy(ledger)
+        mutation["revisions"] = mutation["revisions"] * 17
+        with self.assertRaisesRegex(ValueError, "revisions limit"):
+            validate_packet(mutation, self.stage)
+
+    def test_markdown_and_ledger_agree(self):
+        text, ledger = load_packet()
+        validate_markdown_consistency(text, ledger)
+        validate_pending_records(ledger)
 
 
 if __name__ == "__main__":
