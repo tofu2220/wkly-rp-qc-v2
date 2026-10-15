@@ -75,8 +75,8 @@ def validate_record(text):
         "S020 identifiers are not the frozen P001/P003/P007 IDs",
         "Provider usage/cost: not applicable, not measured as zero",
         "Rejected-state human demo: USER CONFIRMED",
-        "Human unavailable-scope walkthrough: NOT VERIFIED",
-        "ANAT unavailable UI: AUTOMATED GET VERIFIED; HUMAN OBSERVATION PENDING",
+        "Human unavailable-scope walkthrough: ANAT VERIFIED; DEPOT RESTRICTED",
+        "ANAT unavailable UI: AUTOMATED GET VERIFIED; HUMAN VERIFIED",
         "DEPOT frozen cross-period scope: BLOCKED BY PENDING ALIAS",
         "previous_snapshot_id=2&current_snapshot_id=3&project=ANAT+C%C3%B4ng+tr%C6%B0%E1%BB%9Dng&role=PTSP",
         "previous_snapshot_id=8&current_snapshot_id=9&project=DEPOT+GSM&role=PTSP",
@@ -129,7 +129,7 @@ class HonestOfflineDemoOutcomeTests(unittest.TestCase):
         for old, new in (("| `pending` |", "| `approved` |"),
                          ("| `unresolved` |", "| `confirmed` |"),
                          ("| `not_established` |", "| `available_exact_scope` |"),
-                         ("NOT VERIFIED", "PASSED"),
+                         ("ANAT VERIFIED; DEPOT RESTRICTED", "ALL VERIFIED"),
                          ("NOT MANUALLY VERIFIED", "VERIFIED"),
                          ("Rejected-state human demo: USER CONFIRMED", "Rejected-state demo passed"),
                          ("S020-7 discrepancy: RESOLVED BY USER CONFIRMATION", "S020-7 unresolved")):
@@ -152,7 +152,7 @@ class HonestOfflineDemoOutcomeTests(unittest.TestCase):
             "previous_snapshot_id=8&current_snapshot_id=9&project=DEPOT+GSM&role=PTSP",
             "Service: previous 1 / current 4 / sources 8, eligible bundles 0",
             "S020-7 XLSX: MANUALLY VERIFIED BY USER",
-            "ANAT unavailable UI: AUTOMATED GET VERIFIED; HUMAN OBSERVATION PENDING",
+            "ANAT unavailable UI: AUTOMATED GET VERIFIED; HUMAN VERIFIED",
             "DEPOT frozen cross-period scope: BLOCKED BY PENDING ALIAS",
         ):
             self.assertIn(required, text)
