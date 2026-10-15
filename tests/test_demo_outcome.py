@@ -74,11 +74,14 @@ def validate_record(text):
         "All six retain `needs_business_review`",
         "S020 identifiers are not the frozen P001/P003/P007 IDs",
         "Provider usage/cost: not applicable, not measured as zero",
-        "Rejected-state human demo: NOT DEMONSTRATED",
+        "Rejected-state human demo: USER CONFIRMED",
         "Unavailable-scope UI: NOT VERIFIED",
-        "S020-7 discrepancy: UNRESOLVED",
+        "S020-7 discrepancy: RESOLVED BY USER CONFIRMATION",
         "Read-only store: `rejected`",
-        "Transcript: `clarification_needed`",
+        "Earlier transcript (history): `clarification_needed`",
+        "Current user-confirmed state: `rejected`",
+        "S020-7 rejected-row export contents: NOT MANUALLY VERIFIED",
+        "Chất lượng báo cáo không cụ thể",
         "legacy_partial",
         "20261012T031440747089Z",
         manifest["workbook"]["sha256"],
@@ -121,8 +124,18 @@ class HonestOfflineDemoOutcomeTests(unittest.TestCase):
                          ("| `unresolved` |", "| `confirmed` |"),
                          ("| `not_established` |", "| `available_exact_scope` |"),
                          ("NOT VERIFIED", "PASSED"),
-                         ("NOT DEMONSTRATED", "PASSED"),
-                         ("S020-7 discrepancy: UNRESOLVED", "S020-7 reconciled")):
+                         ("NOT MANUALLY VERIFIED", "VERIFIED"),
+                         ("Rejected-state human demo: USER CONFIRMED", "Rejected-state demo passed"),
+                         ("S020-7 discrepancy: RESOLVED BY USER CONFIRMATION", "S020-7 unresolved")):
+            with self.subTest(old=old), self.assertRaises(AssertionError):
+                validate_record(text.replace(old, new))
+
+    def test_rejected_confirmation_preserves_history_and_export_limits(self):
+        text = RECORD.read_text(encoding="utf-8")
+        for old, new in (("Earlier transcript (history): `clarification_needed`", "History removed"),
+                         ("Current user-confirmed state: `rejected`", "Current state: `clarification_needed`"),
+                         ("S020-7 rejected-row export contents: NOT MANUALLY VERIFIED", "All rows verified"),
+                         ("Chất lượng báo cáo không cụ thể", "Different note")):
             with self.subTest(old=old), self.assertRaises(AssertionError):
                 validate_record(text.replace(old, new))
 
