@@ -75,12 +75,18 @@ def validate_record(text):
         "S020 identifiers are not the frozen P001/P003/P007 IDs",
         "Provider usage/cost: not applicable, not measured as zero",
         "Rejected-state human demo: USER CONFIRMED",
-        "Unavailable-scope UI: NOT VERIFIED",
+        "Human unavailable-scope walkthrough: NOT VERIFIED",
+        "ANAT unavailable UI: AUTOMATED GET VERIFIED; HUMAN OBSERVATION PENDING",
+        "DEPOT frozen cross-period scope: BLOCKED BY PENDING ALIAS",
+        "previous_snapshot_id=2&current_snapshot_id=3&project=ANAT+C%C3%B4ng+tr%C6%B0%E1%BB%9Dng&role=PTSP",
+        "previous_snapshot_id=8&current_snapshot_id=9&project=DEPOT+GSM&role=PTSP",
+        "Service: previous 1 / current 4 / sources 8, eligible bundles 0",
         "S020-7 discrepancy: RESOLVED BY USER CONFIRMATION",
         "Read-only store: `rejected`",
         "Earlier transcript (history): `clarification_needed`",
         "Current user-confirmed state: `rejected`",
-        "S020-7 rejected-row export contents: NOT MANUALLY VERIFIED",
+        "S020-7 XLSX: MANUALLY VERIFIED BY USER",
+        "S020-7 CSV/Markdown: NOT MANUALLY VERIFIED",
         "Chất lượng báo cáo không cụ thể",
         "legacy_partial",
         "20261012T031440747089Z",
@@ -134,10 +140,24 @@ class HonestOfflineDemoOutcomeTests(unittest.TestCase):
         text = RECORD.read_text(encoding="utf-8")
         for old, new in (("Earlier transcript (history): `clarification_needed`", "History removed"),
                          ("Current user-confirmed state: `rejected`", "Current state: `clarification_needed`"),
-                         ("S020-7 rejected-row export contents: NOT MANUALLY VERIFIED", "All rows verified"),
+                         ("S020-7 CSV/Markdown: NOT MANUALLY VERIFIED", "All rows verified"),
                          ("Chất lượng báo cáo không cụ thể", "Different note")):
             with self.subTest(old=old), self.assertRaises(AssertionError):
                 validate_record(text.replace(old, new))
+
+    def test_scope_inspection_and_xlsx_confirmation_remain_bounded(self):
+        text = RECORD.read_text(encoding="utf-8")
+        for required in (
+            "previous_snapshot_id=2&current_snapshot_id=3&project=ANAT+C%C3%B4ng+tr%C6%B0%E1%BB%9Dng&role=PTSP",
+            "previous_snapshot_id=8&current_snapshot_id=9&project=DEPOT+GSM&role=PTSP",
+            "Service: previous 1 / current 4 / sources 8, eligible bundles 0",
+            "S020-7 XLSX: MANUALLY VERIFIED BY USER",
+            "ANAT unavailable UI: AUTOMATED GET VERIFIED; HUMAN OBSERVATION PENDING",
+            "DEPOT frozen cross-period scope: BLOCKED BY PENDING ALIAS",
+        ):
+            self.assertIn(required, text)
+            with self.subTest(required=required), self.assertRaises(AssertionError):
+                validate_record(text.replace(required, "unsupported replacement"))
 
     def test_broken_packet_and_pending_links_are_rejected(self):
         text = RECORD.read_text(encoding="utf-8")
