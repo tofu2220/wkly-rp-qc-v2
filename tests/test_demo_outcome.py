@@ -75,6 +75,8 @@ def validate_record(text):
         "S020 identifiers are not the frozen P001/P003/P007 IDs",
         "Provider usage/cost: not applicable, not measured as zero",
         "Rejected-state human demo: USER CONFIRMED",
+        "Readability/status distinctions: USER CONFIRMED",
+        "Confirmation scope: not a DEPOT waiver or alias/product authorization",
         "Human unavailable-scope walkthrough: ANAT VERIFIED; DEPOT RESTRICTED",
         "ANAT unavailable UI: AUTOMATED GET VERIFIED; HUMAN VERIFIED",
         "DEPOT frozen cross-period scope: BLOCKED BY PENDING ALIAS",
@@ -154,6 +156,8 @@ class HonestOfflineDemoOutcomeTests(unittest.TestCase):
             "S020-7 XLSX: MANUALLY VERIFIED BY USER",
             "ANAT unavailable UI: AUTOMATED GET VERIFIED; HUMAN VERIFIED",
             "DEPOT frozen cross-period scope: BLOCKED BY PENDING ALIAS",
+            "Readability/status distinctions: USER CONFIRMED",
+            "Confirmation scope: not a DEPOT waiver or alias/product authorization",
         ):
             self.assertIn(required, text)
             with self.subTest(required=required), self.assertRaises(AssertionError):
