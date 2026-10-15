@@ -29,7 +29,7 @@ def validate_record(text):
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
     assert "**Record:** `honest-offline-pm-demo-v1`" in text
     assert "**Date:** 2026-10-15" in text
-    assert "**Status:** `partial / human_needed`" in text
+    assert "**Status:** `in_scope_work_complete / awaiting_phase_verification`" in text
     assert f"**Packet version:** `{ledger['packet_version']}`" in text
     assert f"**Packet path:** `{PACKET_PATH}`" in text
     digest = hashlib.sha256(PACKET.read_bytes()).hexdigest()
@@ -77,6 +77,10 @@ def validate_record(text):
         "Rejected-state human demo: USER CONFIRMED",
         "Readability/status distinctions: USER CONFIRMED",
         "Confirmation scope: not a DEPOT waiver or alias/product authorization",
+        "AMEND-02-DEPOT-NORESULT-01",
+        "DEPOT literal no-result screen: DEFERRED BY USER; NOT TESTED/PASSED",
+        "No alias/product/policy authorization",
+        "Mandatory in-scope human gates remaining: NONE",
         "Human unavailable-scope walkthrough: ANAT VERIFIED; DEPOT RESTRICTED",
         "ANAT unavailable UI: AUTOMATED GET VERIFIED; HUMAN VERIFIED",
         "DEPOT frozen cross-period scope: BLOCKED BY PENDING ALIAS",
@@ -158,10 +162,30 @@ class HonestOfflineDemoOutcomeTests(unittest.TestCase):
             "DEPOT frozen cross-period scope: BLOCKED BY PENDING ALIAS",
             "Readability/status distinctions: USER CONFIRMED",
             "Confirmation scope: not a DEPOT waiver or alias/product authorization",
+            "DEPOT literal no-result screen: DEFERRED BY USER; NOT TESTED/PASSED",
+            "No alias/product/policy authorization",
         ):
             self.assertIn(required, text)
             with self.subTest(required=required), self.assertRaises(AssertionError):
                 validate_record(text.replace(required, "unsupported replacement"))
+
+    def test_narrow_deferral_is_attributed_and_consistent_across_tracking(self):
+        text = RECORD.read_text(encoding="utf-8")
+        amendment = "AMEND-02-DEPOT-NORESULT-01"
+        for path in (".planning/phases/02-honest-offline-pm-demo/02-CONTEXT.md",
+                     ".planning/REQUIREMENTS.md", ".planning/ROADMAP.md"):
+            tracking = (ROOT / path).read_text(encoding="utf-8")
+            with self.subTest(path=path):
+                self.assertIn(amendment, tracking)
+                self.assertIn("Đồng ys", tracking)
+                self.assertIn("DEMO-01", tracking)
+        self.assertIn("Đồng ys", text)
+        self.assertIn("Deferred follow-up:", text)
+        for old, new in ((amendment, "unattributed-decision"),
+                         ("DEFERRED BY USER; NOT TESTED/PASSED", "TESTED AND PASSED"),
+                         ("No alias/product/policy authorization", "Alias approved")):
+            with self.subTest(old=old), self.assertRaises(AssertionError):
+                validate_record(text.replace(old, new))
 
     def test_broken_packet_and_pending_links_are_rejected(self):
         text = RECORD.read_text(encoding="utf-8")
