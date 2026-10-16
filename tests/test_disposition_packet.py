@@ -843,7 +843,7 @@ def run_artifact_gate(expected_stage: str, *, require_confirmation: bool = False
 class DispositionPacketTests(unittest.TestCase):
     def setUp(self):
         self.assertTrue(PACKET_PATH.is_file(), f"required packet missing: {PACKET_PATH}")
-        self.stage = os.environ.get("DISPOSITION_EXPECT_STAGE", "tracer")
+        self.stage = os.environ.get("DISPOSITION_EXPECT_STAGE", "review_recorded")
 
     def test_tracer_evidence_to_unresolved(self):
         _, ledger = load_packet()
@@ -1297,6 +1297,10 @@ class DispositionPacketTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 run_artifact_gate(self.stage, require_confirmation=True)
 
+    def test_release_stage_and_confirmation_are_required_in_test_runners(self):
+        self.assertEqual(self.stage, "review_recorded")
+        self.assertEqual(run_artifact_gate("review_recorded", require_confirmation=True), 0)
+
     def test_negative_packet_mutations_fail_closed(self):
         _, ledger = load_packet()
         mutations = []
@@ -1407,8 +1411,8 @@ class DispositionPacketTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    stage = os.environ.get("DISPOSITION_EXPECT_STAGE", "tracer")
-    confirmation = os.environ.get("DISPOSITION_REQUIRE_CONFIRMATION") == "1"
+    stage = "review_recorded"
+    confirmation = True
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(DispositionPacketTests)
     count = suite.countTestCases()
     if count == 0:

@@ -20,6 +20,21 @@ DRAFT_COMPARISONS = (
     "proposal: AC-1 thiếu follow-up; không suy ra chưa làm",
     "proposal: AC-2 Identity Uncertain; chưa đủ căn cứ closure riêng",
 )
+ARCHIVED_TRACKING_PATHS = (
+    ".planning/milestones/v1.0-phases/02-honest-offline-pm-demo/02-CONTEXT.md",
+    ".planning/milestones/v1.0-REQUIREMENTS.md",
+    ".planning/milestones/v1.0-ROADMAP.md",
+)
+
+
+def validate_archived_tracking(paths=ARCHIVED_TRACKING_PATHS, *, root=ROOT):
+    """Require the frozen amendment, literal response, and owning requirement in every archive."""
+    amendment = "AMEND-02-DEPOT-NORESULT-01"
+    for path in paths:
+        tracking = (root / path).read_text(encoding="utf-8")
+        for required in (amendment, "Đồng ys", "DEMO-01"):
+            if required not in tracking:
+                raise AssertionError(f"{path}: missing archived tracking evidence {required!r}")
 
 
 def validate_record(text):
@@ -171,14 +186,8 @@ class HonestOfflineDemoOutcomeTests(unittest.TestCase):
 
     def test_narrow_deferral_is_attributed_and_consistent_across_tracking(self):
         text = RECORD.read_text(encoding="utf-8")
+        validate_archived_tracking()
         amendment = "AMEND-02-DEPOT-NORESULT-01"
-        for path in (".planning/phases/02-honest-offline-pm-demo/02-CONTEXT.md",
-                     ".planning/REQUIREMENTS.md", ".planning/ROADMAP.md"):
-            tracking = (ROOT / path).read_text(encoding="utf-8")
-            with self.subTest(path=path):
-                self.assertIn(amendment, tracking)
-                self.assertIn("Đồng ys", tracking)
-                self.assertIn("DEMO-01", tracking)
         self.assertIn("Đồng ys", text)
         self.assertIn("Deferred follow-up:", text)
         for old, new in ((amendment, "unattributed-decision"),
