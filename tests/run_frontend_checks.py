@@ -85,7 +85,7 @@ def validate_artifacts(root: Path = REPO_ROOT) -> tuple[Path, ...]:
         text = asset.read_text(encoding="utf-8", errors="strict")
         refs: list[str] = []
         if asset.suffix in {".js", ".mjs", ".css"}:
-            refs.extend(re.findall(r"(?:from\s*|import\s*\()\s*['\"]([^'\"]+)['\"]", text))
+            refs.extend(re.findall(r"(?:from\s*|import\s*(?:\(\s*)?)['\"]([^'\"]+)['\"]", text))
             refs.extend(re.findall(r"url\(\s*['\"]?([^)'\"]+)['\"]?\s*\)", text))
         for reference in refs:
             # Package-local module specifiers in a built bundle should be relative or

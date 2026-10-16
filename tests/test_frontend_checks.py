@@ -101,6 +101,19 @@ class FrontendBuildRunnerTests(unittest.TestCase):
                 with self.assertRaisesRegex(run_frontend_checks.FrontendCheckError, "missing.js"):
                     run_frontend_checks.build_frontend(root)
 
+    def test_graph_validation_follows_side_effect_module_imports(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self.make_root(temporary)
+            output = root / "src/wkly_rp_qc_v2/frontend_dist"
+            assets = output / "assets"
+            assets.mkdir(parents=True)
+            (output / "index.html").write_text(
+                '<script type="module" src="/app/assets/app.js"></script>', encoding="utf-8"
+            )
+            (assets / "app.js").write_text('import "./missing.css";', encoding="utf-8")
+            with self.assertRaisesRegex(run_frontend_checks.FrontendCheckError, "missing.css"):
+                run_frontend_checks.validate_artifacts(root)
+
     def test_pytest_preserves_no_tests_and_failed_tests_exit_codes(self):
         with patch.object(run_frontend_checks, "build_frontend"), patch.object(
             run_frontend_checks.pytest, "main", return_value=5
