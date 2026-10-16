@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "build": "tsc --noEmit && vite build --base=/app/ --outDir ../src/wkly_rp_qc_v2/frontend_dist"
+    "build": "tsc --noEmit && vite build --base=/app/ --outDir ../src/wkly_rp_qc_v2/frontend_dist --emptyOutDir"
   },
   "dependencies": {
     "react": "19.3.1",

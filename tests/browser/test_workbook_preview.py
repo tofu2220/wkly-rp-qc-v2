@@ -25,11 +25,11 @@ def test_upload_tracer(page: Page, app_server, app_url: str, external_attempts, 
     page.goto(f"{app_url}/app/")
     file_input = page.get_by_label("Chọn tệp Excel")
     file_input.set_input_files(technical_workbook(tmp_path / "technical.xlsx"))
-    page.get_by_role("button", name="Tải và xem trước").click()
-
-    preview_response = page.wait_for_response(
+    with page.expect_response(
         lambda response: "/api/workbooks/" in response.url and response.request.method == "GET"
-    )
+    ) as response_info:
+        page.get_by_role("button", name="Tải và xem trước").click()
+    preview_response = response_info.value
     assert preview_response.status == 200
     preview = preview_response.json()
     assert preview["sheets"][0]["sheet_name"] == "BC Tuần 01.09 - 05.09"

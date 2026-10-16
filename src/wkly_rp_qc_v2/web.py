@@ -31,6 +31,7 @@ from .web_service import (
     review_finding,
     workbook_details,
 )
+from .web_api import create_workbook_router
 
 
 def create_app(settings: WebSettings) -> FastAPI:
@@ -45,6 +46,20 @@ def create_app(settings: WebSettings) -> FastAPI:
     app.router.on_startup.append(worker.start)
     app.router.on_shutdown.append(worker.stop)
     app.mount("/static", StaticFiles(directory=package_dir / "static"), name="static")
+    app.include_router(create_workbook_router(settings))
+
+    frontend_dist = package_dir / "frontend_dist"
+    if (frontend_dist / "assets").is_dir():
+        app.mount("/app/assets", StaticFiles(directory=frontend_dist / "assets"), name="frontend-assets")
+
+    def frontend_page():
+        index = frontend_dist / "index.html"
+        if not index.is_file():
+            raise HTTPException(status_code=503, detail="React frontend build is unavailable; build frontend assets first")
+        return FileResponse(index, media_type="text/html", headers={"Cache-Control": "no-cache"})
+
+    app.add_api_route("/app/", frontend_page, methods=["GET"], include_in_schema=False)
+    app.add_api_route("/app/workbooks/{workbook_id}", frontend_page, methods=["GET"], include_in_schema=False)
 
     @app.get("/")
     async def home(request: Request):

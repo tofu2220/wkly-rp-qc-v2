@@ -93,11 +93,11 @@ def app_url(app_server):
 @pytest.fixture
 def external_attempts(page, app_url):
     attempts = []
-    local_origin = urlsplit(app_url).netloc
+    local_origin = urlsplit(app_url)
 
     def guard(route):
         request_url = urlsplit(route.request.url)
-        if request_url.netloc != local_origin:
+        if (request_url.scheme, request_url.netloc) != (local_origin.scheme, local_origin.netloc):
             attempts.append(route.request.url)
             route.abort()
         else:
