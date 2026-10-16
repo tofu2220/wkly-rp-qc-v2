@@ -1,0 +1,21 @@
+{
+  "name": "wkly-rp-qc-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit && vite build --base=/app/ --outDir ../src/wkly_rp_qc_v2/frontend_dist"
+  },
+  "dependencies": {
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.2",
+    "typescript": "6.0.2",
+    "vite": "8.3.4"
+  }
+}

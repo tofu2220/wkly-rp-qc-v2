@@ -8,6 +8,10 @@ wheels/
 
 # Virtual environments
 .venv
+node_modules/
+src/wkly_rp_qc_v2/frontend_dist/
+test-results/
+playwright-report/
 
 # Local report runs and credentials
 results/
