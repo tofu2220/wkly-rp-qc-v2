@@ -54,7 +54,7 @@ class BrowserAcceptanceTests(unittest.TestCase):
                     self.assertIn('class="status status-', preview.text)
                     self.assertIn('class="warnings"', preview.text)
                     source_rows = re.search(
-                        r"(?s)<details([^>]*)>\s*<summary>Source rows and evidence locations</summary>",
+                        r"(?s)<details([^>]*)>\s*<summary>Dòng nguồn và vị trí ô</summary>",
                         preview.text,
                     )
                     self.assertIsNotNone(source_rows)

@@ -18,10 +18,12 @@ from .store import (
     get_job,
     get_original_workbook_path,
     get_snapshot,
+    get_workbook_version,
     import_workbook,
     list_finding_reviews,
     list_project_aliases,
     list_snapshots,
+    list_workbook_versions,
     save_finding_review,
 )
 
@@ -48,11 +50,20 @@ def import_upload(settings: WebSettings, filename: str | None, content: bytes) -
         return import_workbook(source, settings.database_path, settings.storage_dir)
 
 
-def workbook_details(settings: WebSettings, workbook_id: int) -> dict:
-    snapshots = [item for item in list_snapshots(settings.database_path) if item["workbook_id"] == workbook_id]
-    if not snapshots:
+def workbook_details(settings: WebSettings, workbook_id: int) -> JsonDict:
+    version = get_workbook_version(settings.database_path, workbook_id)
+    if version is None:
         return {}
-    sheets = [get_snapshot(settings.database_path, item["snapshot_id"]) for item in snapshots]
+    snapshots = sorted(
+        (item for item in list_snapshots(settings.database_path) if item["workbook_id"] == workbook_id),
+        key=lambda item: item["sheet_index"],
+    )
+    sheets: list[JsonDict] = []
+    for item in snapshots:
+        sheet = get_snapshot(settings.database_path, item["snapshot_id"])
+        if sheet is None:
+            raise RuntimeError("Stored workbook snapshot disappeared during preview construction")
+        sheets.append(sheet)
     if any(sheet["mapping_status"] == "mapping_required" for sheet in sheets):
         original = get_original_workbook_path(settings.database_path, settings.storage_dir, workbook_id)
         workbook = load_workbook(original, data_only=False, read_only=True)
@@ -79,11 +90,16 @@ def workbook_details(settings: WebSettings, workbook_id: int) -> dict:
         finally:
             workbook.close()
     return {
-        "workbook_id": workbook_id,
-        "sha256": snapshots[0]["workbook_sha256"],
-        "original_filename": snapshots[0]["original_filename"],
+        **version,
         "sheets": sheets,
     }
+
+
+def workbook_catalog(settings: WebSettings) -> list[JsonDict]:
+    return [
+        {**item, "preview_url": f"/app/workbooks/{item['workbook_id']}"}
+        for item in list_workbook_versions(settings.database_path)
+    ]
 
 
 def confirm_mapping(

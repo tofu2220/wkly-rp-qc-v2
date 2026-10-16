@@ -290,6 +290,58 @@ def get_original_workbook_path(database_path: Path, storage_dir: Path, workbook_
     return workbook_path
 
 
+def get_workbook_version(database_path: Path, workbook_id: int) -> JsonDict | None:
+    with _connect(Path(database_path)) as connection:
+        connection.row_factory = sqlite3.Row
+        row = connection.execute(
+            "SELECT workbook_id, sha256, original_filename, imported_at_utc "
+            "FROM workbook_versions WHERE workbook_id=?",
+            (workbook_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "workbook_id": row["workbook_id"],
+        "sha256": row["sha256"],
+        "original_filename": row["original_filename"],
+        "imported_at_utc": row["imported_at_utc"],
+    }
+
+
+def list_workbook_versions(database_path: Path) -> list[JsonDict]:
+    """Return metadata and source-attention counts for each stored workbook."""
+    with _connect(Path(database_path)) as connection:
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute(
+            "SELECT w.workbook_id, w.sha256, w.original_filename, w.imported_at_utc, "
+            "s.snapshot_id, s.mapping_status, s.warnings_json "
+            "FROM workbook_versions w LEFT JOIN report_snapshots s ON s.workbook_id=w.workbook_id "
+            "ORDER BY w.imported_at_utc DESC, w.workbook_id DESC, s.sheet_index"
+        ).fetchall()
+
+    versions: dict[int, JsonDict] = {}
+    for row in rows:
+        workbook_id = row["workbook_id"]
+        version = versions.setdefault(workbook_id, {
+            "workbook_id": workbook_id,
+            "sha256": row["sha256"],
+            "original_filename": row["original_filename"],
+            "imported_at_utc": row["imported_at_utc"],
+            "sheet_count": 0,
+            "mapping_required_count": 0,
+            "warning_count": 0,
+        })
+        if row["snapshot_id"] is None:
+            continue
+        version["sheet_count"] += 1
+        if row["mapping_status"] == "mapping_required":
+            version["mapping_required_count"] += 1
+        warnings = json.loads(row["warnings_json"])
+        if isinstance(warnings, list):
+            version["warning_count"] += len(warnings)
+    return list(versions.values())
+
+
 def _decode_snapshot(row: sqlite3.Row) -> JsonDict:
     period = json.loads(row["reporting_period_json"]) if row["reporting_period_json"] else None
     if period is None or period.get("status") == "unknown":
@@ -540,6 +592,7 @@ def apply_template_mapping(
         if not source_reference or not source_reference.strip():
             raise ValueError("Manual mapping requires a source reference")
         mapping_source_reference = source_reference
+    assert mapping is not None
     with _connect(Path(database_path)) as connection:
         workbook = connection.execute(
             "SELECT sha256, storage_relpath FROM workbook_versions WHERE workbook_id=?", (workbook_id,)

@@ -1,3 +1,4 @@
+import json
 from dataclasses import asdict
 from pathlib import Path
 from zipfile import BadZipFile
@@ -6,7 +7,13 @@ from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 from openpyxl.utils.exceptions import InvalidFileException
 
-from .web_service import MAX_UPLOAD_BYTES, WebSettings, import_upload, workbook_details
+from .web_service import (
+    MAX_UPLOAD_BYTES,
+    WebSettings,
+    import_upload,
+    workbook_catalog,
+    workbook_details,
+)
 
 
 def _require_local_origin(request: Request) -> None:
@@ -52,10 +59,42 @@ def create_workbook_router(settings: WebSettings) -> APIRouter:
         )
 
     @router.get("/api/workbooks/{workbook_id}")
-    async def get_workbook(workbook_id: int):
+    async def get_workbook(request: Request, workbook_id: int):
         details = workbook_details(settings, workbook_id)
         if not details:
             raise HTTPException(status_code=404, detail="Workbook version not found")
-        return details
+        raw_notice = request.cookies.get("workbook_tool_notice")
+        notice_payload = None
+        if raw_notice:
+            try:
+                notice = json.loads(raw_notice)
+            except (json.JSONDecodeError, TypeError):
+                notice = None
+            if isinstance(notice, dict):
+                notice_workbook = notice.get("workbook_id")
+                notice_snapshot = notice.get("snapshot_id")
+                operation = notice.get("operation")
+                matching_sheet = any(sheet["snapshot_id"] == notice_snapshot for sheet in details["sheets"])
+                if (
+                    type(notice_workbook) is int
+                    and notice_workbook == workbook_id
+                    and type(notice_snapshot) is int
+                    and matching_sheet
+                    and operation in {"mapping", "alias"}
+                ):
+                    notice_payload = {"operation": operation, "snapshot_id": notice_snapshot}
+        response = JSONResponse(
+            content={**details, **({"tool_notice": notice_payload} if notice_payload else {})},
+            headers={"Cache-Control": "no-store"},
+        )
+        if raw_notice:
+            response.delete_cookie(
+                "workbook_tool_notice", path="/", httponly=True, samesite="strict"
+            )
+        return response
+
+    @router.get("/api/workbooks")
+    async def list_workbooks():
+        return workbook_catalog(settings)
 
     return router

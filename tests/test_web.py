@@ -135,7 +135,7 @@ class WebAppTests(unittest.TestCase):
             workbook_id = int(response.headers["location"].rsplit("/", 1)[1])
             preview = client.get(response.headers["location"])
             self.assertIn("mapping_required", preview.text)
-            self.assertIn("Save mapping", preview.text)
+            self.assertIn("Thiết lập cột cho sheet này", preview.text)
             self.assertIn("Reported status", preview.text)
             self.assertIn("Unlabeled continuation", preview.text)
 

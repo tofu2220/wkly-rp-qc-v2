@@ -1,6 +1,8 @@
 import argparse
+import json
 from pathlib import Path
 from typing import Annotated
+from urllib.parse import quote, urlencode
 from zipfile import BadZipFile
 
 import uvicorn
@@ -10,15 +12,18 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from openpyxl.utils.exceptions import InvalidFileException
 
+from .core import JsonDict
 from .jobs import JobWorker
 from .store import (
     find_source_conflicts,
     get_snapshot,
+    get_workbook_version,
     initialize_store,
     list_project_aliases,
     list_snapshots,
     resolve_project_alias,
 )
+from .web_api import create_workbook_router
 from .web_export import write_web_exports
 from .web_service import (
     WebSettings,
@@ -31,7 +36,58 @@ from .web_service import (
     review_finding,
     workbook_details,
 )
-from .web_api import create_workbook_router
+
+
+def react_workbook_url(workbook_id: int, snapshot_id: int) -> str:
+    return f"/app/workbooks/{workbook_id}?{urlencode({'sheet': snapshot_id})}"
+
+
+def validate_tool_context(
+    settings: WebSettings,
+    workbook_id: int,
+    return_app: bool,
+    snapshot_id: int | None,
+    *,
+    sheet_name: str | None = None,
+) -> JsonDict | None:
+    if not return_app:
+        return None
+    if snapshot_id is None:
+        raise HTTPException(status_code=400, detail="Thiếu ngữ cảnh sheet cần quay lại.")
+    if get_workbook_version(settings.database_path, workbook_id) is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy workbook đã lưu.")
+    snapshot = get_snapshot(settings.database_path, snapshot_id)
+    if snapshot is None or snapshot["workbook_id"] != workbook_id:
+        raise HTTPException(status_code=404, detail="Sheet không thuộc workbook đã chọn.")
+    if sheet_name is not None and snapshot["sheet_name"] != sheet_name:
+        raise HTTPException(status_code=404, detail="Tên sheet không khớp với nguồn đã chọn.")
+    return {
+        "workbook_id": workbook_id,
+        "snapshot_id": snapshot_id,
+        "sheet_name": snapshot["sheet_name"],
+        "return_url": react_workbook_url(workbook_id, snapshot_id),
+    }
+
+
+def _tool_notice(response: RedirectResponse, context: JsonDict, operation: str) -> RedirectResponse:
+    response.set_cookie(
+        "workbook_tool_notice",
+        json.dumps({**context, "operation": operation}, ensure_ascii=False, separators=(",", ":")),
+        max_age=120,
+        httponly=True,
+        samesite="strict",
+        path="/",
+    )
+    return response
+
+
+def _require_local_form_origin(request: Request) -> None:
+    origin = request.headers.get("origin")
+    fetch_site = request.headers.get("sec-fetch-site")
+    if fetch_site in {"cross-site", "same-site"}:
+        raise HTTPException(status_code=403, detail="Không chấp nhận thay đổi từ nguồn khác trang.")
+    if origin and origin.rstrip("/") != str(request.base_url).rstrip("/"):
+        raise HTTPException(status_code=403, detail="Không chấp nhận thay đổi từ nguồn khác trang.")
 
 
 def create_app(settings: WebSettings) -> FastAPI:
@@ -82,67 +138,120 @@ def create_app(settings: WebSettings) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(error)) from error
         return RedirectResponse(f"/workbooks/{result.workbook_id}", status_code=303)
 
-    @app.get("/workbooks/{workbook_id}")
-    async def workbook_page(request: Request, workbook_id: int):
+    def render_tool_form(
+        request: Request,
+        workbook_id: int,
+        *,
+        context: JsonDict | None = None,
+        tool: str | None = None,
+        error: str | None = None,
+        mapping_values: dict[str, str] | None = None,
+        alias_values: dict[str, str] | None = None,
+        status_code: int = 200,
+    ):
         details = workbook_details(settings, workbook_id)
         if not details:
             raise HTTPException(status_code=404, detail="Workbook version not found")
+        mapping_actions = {
+            item["snapshot_id"]: f"/workbooks/{workbook_id}/sheets/{quote(item['sheet_name'], safe='')}/mapping"
+            for item in details["sheets"]
+        }
         return templates.TemplateResponse(request, "workbook.html", {
             "workbook": details,
             "max_upload_bytes": 32 * 1024 * 1024,
-        })
+            "tool_context": context,
+            "selected_tool": tool,
+            "tool_error": error,
+            "mapping_values": mapping_values or {},
+            "alias_values": alias_values or {},
+            "mapping_actions": mapping_actions,
+        }, status_code=status_code)
+
+    @app.get("/workbooks/{workbook_id}")
+    async def workbook_page(
+        request: Request,
+        workbook_id: int,
+        return_app: bool = False,
+        sheet: int | None = None,
+        tool: str | None = None,
+    ):
+        if tool not in (None, "mapping", "aliases"):
+            raise HTTPException(status_code=400, detail="Không nhận diện được công cụ cần mở.")
+        context = validate_tool_context(settings, workbook_id, return_app, sheet)
+        return render_tool_form(request, workbook_id, context=context, tool=tool)
 
     @app.post("/workbooks/{workbook_id}/aliases")
-    async def add_alias(
-        workbook_id: int,
-        raw_label: str = Form(...),
-        canonical_label: str = Form(...),
-        source_reference: str = Form(...),
-    ):
+    async def add_alias(request: Request, workbook_id: int, return_app: bool = False, sheet: int | None = None):
+        _require_local_form_origin(request)
+        context = validate_tool_context(settings, workbook_id, return_app, sheet)
+        form = await request.form()
+        values = {name: str(form.get(name, "")) for name in ("raw_label", "canonical_label", "source_reference")}
         try:
-            confirm_alias(settings, raw_label, canonical_label, source_reference)
-        except ValueError as error:
-            raise HTTPException(status_code=400, detail=str(error)) from error
+            confirm_alias(settings, values["raw_label"], values["canonical_label"], values["source_reference"])
+        except (ValueError, OSError) as error:
+            message = "Chưa lưu được thay đổi. Kiểm tra các trường được đánh dấu rồi lưu lại; nội dung bạn nhập vẫn được giữ."
+            if isinstance(error, ValueError):
+                message += f" {error}"
+            return render_tool_form(
+                request, workbook_id, context=context, tool="aliases", error=message,
+                alias_values=values, status_code=400,
+            )
+        if context:
+            return _tool_notice(RedirectResponse(context["return_url"], status_code=303), context, "alias")
         return RedirectResponse(f"/workbooks/{workbook_id}", status_code=303)
 
     @app.post("/workbooks/{workbook_id}/sheets/{sheet_name}/mapping")
     async def map_sheet(
+        request: Request,
         workbook_id: int,
         sheet_name: str,
-        template_id: str = Form(...),
-        version: str = Form(...),
-        source_reference: str = Form(...),
-        header_row: int = Form(...),
-        first_data_row: int = Form(...),
-        project_col: int = Form(...),
-        role_col: int = Form(...),
-        pic_col: str = Form(""),
-        actual_col: str = Form(""),
-        next_plan_col: str = Form(""),
-        issue_risk_col: str = Form(""),
+        return_app: bool = False,
+        sheet: int | None = None,
     ):
-        def optional_column(value: str) -> int | None:
-            return int(value) if value.strip() else None
+        _require_local_form_origin(request)
+        context = validate_tool_context(settings, workbook_id, return_app, sheet, sheet_name=sheet_name)
+        form = await request.form()
+        names = ("template_id", "version", "source_reference", "header_row", "first_data_row", "project_col", "role_col", "pic_col", "actual_col", "next_plan_col", "issue_risk_col")
+        values = {name: str(form.get(name, "")) for name in names}
 
-        mapping = {
-            "mode": "flat",
-            "template_id": template_id,
-            "version": version,
-            "header_row": header_row,
-            "first_data_row": first_data_row,
-            "columns": {
-                "project": project_col,
-                "role": role_col,
-                "pic": optional_column(pic_col),
-                "actual": optional_column(actual_col),
-                "next_plan": optional_column(next_plan_col),
-                "issue_risk": optional_column(issue_risk_col),
-            },
-        }
+        def required_integer(name: str) -> int:
+            try:
+                return int(values[name])
+            except ValueError as error:
+                raise ValueError(f"Nhập số nguyên hợp lệ cho trường {name}.") from error
+
+        def optional_integer(name: str) -> int | None:
+            if not values[name].strip():
+                return None
+            return required_integer(name)
+
         try:
-            confirm_mapping(settings, workbook_id, sheet_name, mapping, source_reference)
+            mapping: JsonDict = {
+                "mode": "flat",
+                "template_id": values["template_id"],
+                "version": values["version"],
+                "header_row": required_integer("header_row"),
+                "first_data_row": required_integer("first_data_row"),
+                "columns": {
+                    "project": required_integer("project_col"),
+                    "role": required_integer("role_col"),
+                    "pic": optional_integer("pic_col"),
+                    "actual": optional_integer("actual_col"),
+                    "next_plan": optional_integer("next_plan_col"),
+                    "issue_risk": optional_integer("issue_risk_col"),
+                },
+            }
+            confirm_mapping(settings, workbook_id, sheet_name, mapping, values["source_reference"])
         except (ValueError, OSError) as error:
-            raise HTTPException(status_code=400, detail=str(error)) from error
+            message = "Chưa lưu được thay đổi. Kiểm tra các trường được đánh dấu rồi lưu lại; nội dung bạn nhập vẫn được giữ."
+            if isinstance(error, ValueError):
+                message += f" {error}"
+            return render_tool_form(
+                request, workbook_id, context=context, tool="mapping", error=message,
+                mapping_values=values, status_code=400,
+            )
+        if context:
+            return _tool_notice(RedirectResponse(context["return_url"], status_code=303), context, "mapping")
         return RedirectResponse(f"/workbooks/{workbook_id}", status_code=303)
 
     @app.get("/scope")

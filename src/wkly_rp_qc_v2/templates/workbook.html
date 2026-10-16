@@ -1,12 +1,21 @@
 {% extends "base.html" %}
-{% block title %}Import preview · Weekly Report QC{% endblock %}
+{% block title %}Workbook · Weekly Report QC{% endblock %}
 {% block content %}
-  <p class="eyebrow"><a href="/">Workbooks</a> / import preview</p>
+  <p class="eyebrow"><a href="/">Danh sách workbook</a> / nguồn đã lưu</p>
+  {% if tool_context %}
+    <p><a class="button-link" href="{{ tool_context.return_url }}">Quay lại workbook: {{ tool_context.sheet_name }}</a></p>
+  {% endif %}
   <h1>{{ workbook.original_filename }}</h1>
-  <p class="hint">SHA-256 <code>{{ workbook.sha256 }}</code></p>
   <p class="hint">Khi kiểm tra xong mapping và kỳ báo cáo, tiếp tục chọn phạm vi. Chưa có phân tích nào được chạy.</p>
+  <details><summary>Thông tin kỹ thuật</summary>
+    <dl class="facts"><div><dt>SHA-256</dt><dd><code>{{ workbook.sha256 }}</code></dd></div>
+      <div><dt>Thời điểm nhập</dt><dd><time datetime="{{ workbook.imported_at_utc }}">{{ workbook.imported_at_utc }}</time></dd></div>
+      <div><dt>Số workbook</dt><dd>{{ workbook.workbook_id }}</dd></div></dl>
+  </details>
+
+  {% if tool_error %}<section id="tool-error" class="tool-error" role="alert" tabindex="-1"><h2>Chưa lưu thay đổi</h2><p>{{ tool_error }}</p></section>{% endif %}
   {% for sheet in workbook.sheets %}
-    <section class="panel sheet-panel">
+    <section class="panel sheet-panel" id="sheet-{{ sheet.snapshot_id }}">
       <div class="section-heading">
         <div><p class="eyebrow">Sheet {{ sheet.sheet_index + 1 }}</p><h2>{{ sheet.sheet_name }}</h2></div>
         <span class="status status-{{ sheet.mapping_status }}">{{ sheet.mapping_status }}</span>
@@ -16,16 +25,17 @@
         <div><dt>Trạng thái</dt><dd>{{ sheet.sheet_state }}</dd></div>
         <div><dt>Số dòng</dt><dd>{{ sheet.row_count }}</dd></div>
         <div><dt>Kỳ</dt><dd>{{ (sheet.reporting_period or {}).get("label") or "chưa xác định" }}</dd></div>
-        {% if sheet.mapping_version %}<div><dt>Mapping decision</dt><dd>{{ sheet.template_id }}@{{ sheet.mapping_version }}<br><span class="hint">{{ sheet.mapping_source_reference }}</span></dd></div>{% endif %}
+        {% if sheet.mapping_version %}<div><dt>Mapping đã lưu</dt><dd>{{ sheet.template_id }}@{{ sheet.mapping_version }}<br><span class="hint">{{ sheet.mapping_source_reference }}</span></dd></div>{% endif %}
       </dl>
       {% if sheet.warnings %}<ul class="warnings">{% for warning in sheet.warnings %}<li>{{ warning }}</li>{% endfor %}</ul>{% endif %}
-      {% if sheet.rows %}
+      {% if sheet.row_count == 0 %}<p>{% if sheet.mapping_status == "mapping_required" %}Cần thiết lập cột trước khi đọc dòng nguồn; số 0 không có nghĩa sheet Excel trống.{% else %}Chưa có dòng nguồn đã đọc. Kiểm tra sheet gốc và các lưu ý nguồn.{% endif %}</p>{% endif %}
       <details>
-        <summary>Source rows and evidence locations</summary>
-        <div class="table-wrap"><table><thead><tr><th>Row</th><th>Project</th><th>Role</th><th>PIC</th><th>Actual</th><th>Next Plan</th><th>Issue/Risk</th></tr></thead><tbody>
+        <summary>Dòng nguồn và vị trí ô</summary>
+        {% if sheet.rows %}
+        <div class="table-wrap"><table><thead><tr><th>Dòng</th><th>Dự án</th><th>Vai trò</th><th>Người phụ trách</th><th>Kết quả tuần</th><th>Kế hoạch tuần</th><th>Vấn đề / rủi ro</th></tr></thead><tbody>
         {% for row in sheet.rows %}
           <tr>
-            <td>{{ row.source_row }}</td>
+            <th scope="row">{{ row.source_row }}</th>
             {% for field in ("project_label", "role_label", "pic", "actual", "next_plan", "issue_risk") %}
               {% set source_field = {"project_label":"project", "role_label":"role"}.get(field, field) %}
               <td><span class="source-value">{{ row[field] if row[field] is not none else "—" }}</span><br><code class="source-ref">{{ row.source_refs.get(source_field) or "—" }}</code></td>
@@ -33,53 +43,58 @@
           </tr>
         {% endfor %}
         </tbody></table></div>
+        {% else %}<p>Chưa có dòng đã đọc để hiển thị trong phần này.</p>{% endif %}
       </details>
-      {% endif %}
-      {% if sheet.mapping_status == "mapping_required" %}
-      {% if sheet.cell_preview %}
+      {% if sheet.mapping_status == "mapping_required" and sheet.cell_preview %}
       <details open>
-        <summary>Raw layout preview (source cells)</summary>
-        <div class="table-wrap"><table><thead><tr><th>Row</th>{% for cell in sheet.cell_preview[0].cells %}<th>{{ cell.column }}</th>{% endfor %}</tr></thead><tbody>
-        {% for row in sheet.cell_preview %}<tr><th>{{ row.row }}</th>{% for cell in row.cells %}<td><code>{{ cell.address }}</code><br>{{ cell.value if cell.value is not none else "—" }}{% if cell.truncated %}<span class="hint">(preview shortened)</span>{% endif %}</td>{% endfor %}</tr>{% endfor %}
+        <summary>Bố cục ô nguồn — bản xem trước giới hạn</summary>
+        <p>Tối đa 20 dòng × 12 cột, mỗi ô tối đa 240 ký tự. Phần còn lại xem trong workbook gốc bằng Excel.</p>
+        <div class="table-wrap"><table><thead><tr><th scope="col">Dòng</th>{% for cell in sheet.cell_preview[0].cells %}<th scope="col">{{ cell.column }}</th>{% endfor %}</tr></thead><tbody>
+        {% for row in sheet.cell_preview %}<tr><th scope="row">{{ row.row }}</th>{% for cell in row.cells %}<td><code>{{ cell.address }}</code><br>{{ cell.value if cell.value is not none else "—" }}{% if cell.truncated %}<span class="hint">(đã cắt ở 240 ký tự)</span>{% endif %}</td>{% endfor %}</tr>{% endfor %}
         </tbody></table></div>
       </details>
       {% endif %}
-      <details class="mapping-form">
-        <summary>Save mapping</summary>
-        <p class="hint">Map từng cột rõ ràng. Các dòng thiếu Project/Role vẫn giữ null; không tự điền.</p>
-        <form action="/workbooks/{{ workbook.workbook_id }}/sheets/{{ sheet.sheet_name }}/mapping" method="post" class="mapping-grid">
-          <label>Template ID<input name="template_id" value="manual-flat" required></label>
-          <label>Version<input name="version" value="1" required></label>
-          <label>Header row<input name="header_row" type="number" min="1" value="1" required></label>
-          <label>First data row<input name="first_data_row" type="number" min="2" value="2" required></label>
-          <label>Project column<input name="project_col" type="number" min="1" required></label>
-          <label>Role column<input name="role_col" type="number" min="1" required></label>
-          <label>PIC column<input name="pic_col" type="number" min="1"></label>
-          <label>Actual column<input name="actual_col" type="number" min="1"></label>
-          <label>Next Plan column<input name="next_plan_col" type="number" min="1"></label>
-          <label>Issue/Risk column<input name="issue_risk_col" type="number" min="1"></label>
-          <label class="wide">Mapping source / reason<input name="source_reference" required></label>
-          <button class="wide" type="submit">Apply and reprocess this sheet</button>
+      {% if sheet.mapping_status == "mapping_required" %}
+      <details class="mapping-form" id="mapping-{{ sheet.snapshot_id }}" {% if selected_tool == "mapping" and tool_context and tool_context.snapshot_id == sheet.snapshot_id %}open{% endif %}>
+        <summary>Thiết lập cột cho sheet này</summary>
+        {% if tool_context and tool_context.snapshot_id == sheet.snapshot_id %}<p><a href="{{ tool_context.return_url }}">Quay lại workbook: {{ sheet.sheet_name }}</a></p>{% endif %}
+        <p class="hint">Chọn số cột Excel cho từng trường. Ví dụ: A = 1, B = 2. Dữ liệu trống được giữ nguyên, không tự điền.</p>
+        <form action="{{ mapping_actions[sheet.snapshot_id] }}{% if tool_context %}?return_app=1&amp;sheet={{ tool_context.snapshot_id }}{% endif %}" method="post" class="mapping-grid">
+          <label>Mã thiết lập<input name="template_id" value="{{ mapping_values.get('template_id', 'manual-flat') }}" required></label>
+          <label>Phiên bản<input name="version" value="{{ mapping_values.get('version', '1') }}" required></label>
+          <label>Dòng tiêu đề trong Excel<input name="header_row" type="number" min="1" value="{{ mapping_values.get('header_row', '1') }}" required></label>
+          <label>Dòng dữ liệu đầu tiên<input name="first_data_row" type="number" min="2" value="{{ mapping_values.get('first_data_row', '2') }}" required></label>
+          <label>Cột dự án (số cột)<input name="project_col" type="number" min="1" value="{{ mapping_values.get('project_col', '') }}" required></label>
+          <label>Cột vai trò (số cột)<input name="role_col" type="number" min="1" value="{{ mapping_values.get('role_col', '') }}" required></label>
+          <label>Cột người phụ trách (không bắt buộc)<input name="pic_col" type="number" min="1" value="{{ mapping_values.get('pic_col', '') }}"></label>
+          <label>Cột kết quả tuần<input name="actual_col" type="number" min="1" value="{{ mapping_values.get('actual_col', '') }}"></label>
+          <label>Cột kế hoạch tuần<input name="next_plan_col" type="number" min="1" value="{{ mapping_values.get('next_plan_col', '') }}"></label>
+          <label>Cột vấn đề / rủi ro<input name="issue_risk_col" type="number" min="1" value="{{ mapping_values.get('issue_risk_col', '') }}"></label>
+          <label class="wide">Nguồn xác định cách ghép cột<input name="source_reference" value="{{ mapping_values.get('source_reference', '') }}" required></label>
+          <p class="hint wide">Ghi nguồn hoặc lý do bạn dùng để xác định mapping. Thao tác này không xác nhận alias hay đánh giá chất lượng báo cáo.</p>
+          <button class="wide" type="submit">Lưu thiết lập cột</button>
         </form>
       </details>
       {% else %}
-      <details><summary>Mapping preview</summary>
-        <div class="table-wrap"><table><thead><tr><th>Field</th><th>Header cell</th><th>Source header</th><th>Mapping</th></tr></thead><tbody>
-        {% for field, mapping in sheet.mapping.items() %}<tr><td>{{ field }}</td><td>{{ mapping.header_cell_address or "—" }}</td><td>{{ mapping.original_header_text or "—" }}</td><td>{{ mapping.status }}</td></tr>{% endfor %}
+      <details><summary>Xem mapping đã nhận diện</summary>
+        <div class="table-wrap"><table><thead><tr><th>Trường</th><th>Ô tiêu đề</th><th>Tiêu đề gốc</th><th>Trạng thái</th></tr></thead><tbody>
+        {% for field, mapping in sheet.mapping.items() %}<tr><th scope="row">{{ field }}</th><td>{{ mapping.header_cell_address or "—" }}</td><td>{{ mapping.original_header_text if mapping.original_header_text is not none else "Không có giá trị" }}</td><td>{{ mapping.status }}</td></tr>{% endfor %}
         </tbody></table></div>
       </details>
       {% endif %}
     </section>
   {% endfor %}
 
-  <section class="panel">
-    <h2>Explicit project alias</h2>
-    <p class="hint">Alias chỉ được dùng sau khi bạn xác nhận. Nhãn nguồn vẫn được giữ nguyên.</p>
-    <form action="/workbooks/{{ workbook.workbook_id }}/aliases" method="post" class="mapping-grid">
-      <label>Raw label<input name="raw_label" required></label>
-      <label>Canonical label<input name="canonical_label" required></label>
-      <label class="wide">Decision source<input name="source_reference" required></label>
-      <button class="wide" type="submit">Confirm alias</button>
+  <details class="advanced-tools" id="aliases" {% if selected_tool == "aliases" %}open{% endif %}>
+    <summary>Công cụ nâng cao — alias dự án</summary>
+    <p class="hint">Alias là thao tác riêng, không bắt buộc để xem nguồn. Chỉ xác nhận khi có nguồn quyết định phù hợp; nhãn nguồn vẫn được giữ nguyên.</p>
+    {% if tool_context %}<p><a href="{{ tool_context.return_url }}">Quay lại workbook: {{ tool_context.sheet_name }}</a></p>{% endif %}
+    <form action="/workbooks/{{ workbook.workbook_id }}/aliases{% if tool_context %}?return_app=1&amp;sheet={{ tool_context.snapshot_id }}{% endif %}" method="post" class="mapping-grid">
+      <label>Nhãn dự án trong nguồn<input name="raw_label" value="{{ alias_values.get('raw_label', '') }}" required></label>
+      <label>Nhãn dự án chuẩn<input name="canonical_label" value="{{ alias_values.get('canonical_label', '') }}" required></label>
+      <label class="wide">Nguồn xác nhận alias<input name="source_reference" value="{{ alias_values.get('source_reference', '') }}" required></label>
+      <button class="wide" type="submit">Lưu alias đã xác nhận</button>
     </form>
-  </section>
+  </details>
+  {% if tool_error %}<script>document.getElementById("tool-error")?.focus()</script>{% endif %}
 {% endblock %}
