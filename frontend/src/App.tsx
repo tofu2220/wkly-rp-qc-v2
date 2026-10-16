@@ -58,6 +58,7 @@ function App() {
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const form = event.currentTarget;
     if (!file) {
       setMessage("Vui lòng chọn tệp Excel trước khi tải lên.");
       return;
@@ -84,7 +85,7 @@ function App() {
         : "Đã lưu. Workbook chưa được phân tích.");
       window.history.pushState({}, "", target.pathname);
       setFile(null);
-      event.currentTarget.reset();
+      form.reset();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Không thể nhập workbook. Hãy thử lại.");
     } finally {

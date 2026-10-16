@@ -36,6 +36,9 @@ def test_upload_tracer(page: Page, app_server, app_url: str, external_attempts, 
     assert preview["sheets"][0]["sheet_name"] == "BC Tuần 01.09 - 05.09"
     expect(page.get_by_text("BC Tuần 01.09 - 05.09", exact=True)).to_be_visible()
     expect(page.get_by_text("Reported status from source", exact=True)).to_be_visible()
+    expect(page.get_by_role("status")).to_contain_text("Đã lưu. Workbook chưa được phân tích.")
+    await_empty = page.locator("#workbook-file").input_value()
+    assert await_empty == ""
     assert page.url.endswith(f"/app/workbooks/{preview['workbook_id']}")
 
     with sqlite3.connect(app_server["database"]) as connection:

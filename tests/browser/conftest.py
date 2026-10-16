@@ -1,7 +1,6 @@
 import os
 import shutil
 import socket
-import sqlite3
 import tempfile
 import threading
 import time
