@@ -29,7 +29,7 @@ type ImportResult = {
 
 async function readJson(response: Response) {
   if (!response.headers.get("content-type")?.includes("application/json")) {
-    throw new Error("Máy chủ trả về phản hồi không phải JSON.");
+    throw new Error("Máy chủ trả về phản hồi không phải JSON; tệp chưa được xác nhận là đã lưu. Hãy thử lại.");
   }
   return response.json();
 }
@@ -70,7 +70,9 @@ function App() {
       const response = await fetch("/api/workbooks", { method: "POST", body });
       if (![200, 201].includes(response.status)) {
         const error = await readJson(response).catch(() => null);
-        throw new Error(error?.detail || "Không thể nhập workbook. Hãy kiểm tra tệp rồi thử lại.");
+        throw new Error(typeof error?.detail === "string"
+          ? error.detail
+          : "Không thể nhập workbook. Hãy kiểm tra tệp rồi thử lại.");
       }
       const imported = (await readJson(response)) as ImportResult;
       const target = new URL(imported.preview_url, window.location.origin);
