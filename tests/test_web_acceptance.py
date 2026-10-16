@@ -1,6 +1,5 @@
 import hashlib
 import json
-import os
 import re
 import time
 import unittest
@@ -12,18 +11,21 @@ from test_web import ASGITestClient
 
 from wkly_rp_qc_v2.store import get_job, list_snapshots
 from wkly_rp_qc_v2.web import WebSettings, create_app
+from run_release_checks import required_acceptance_inputs
 
-PROJECT_ROOT = Path("/home/tofu/Projects/wkly-rp-qc-v2")
-SAMPLE_WORKBOOK = Path(os.environ.get(
-    "WKLY_RP_QC_SAMPLE_WORKBOOK", str(PROJECT_ROOT / "docs/Khối SMC_Báo cáo tuần chi tiết.xlsx")
-))
-SAMPLE_NORMALIZED = PROJECT_ROOT / "download/1-raw/normalized_rows.json"
-REPLAY_RUN = PROJECT_ROOT / "results/smart-parking/20261012T031440747089Z"
-REPLAY_ROOT = REPLAY_RUN.parent
+ACCEPTANCE_INPUTS = required_acceptance_inputs()
+SAMPLE_WORKBOOK = ACCEPTANCE_INPUTS["workbook"]
+SAMPLE_NORMALIZED = ACCEPTANCE_INPUTS["normalized"]
+REPLAY_RUN = ACCEPTANCE_INPUTS["replay_run"]
+REPLAY_ROOT = ACCEPTANCE_INPUTS["replay_root"]
 
 
-@unittest.skipUnless(SAMPLE_WORKBOOK.is_file() and REPLAY_RUN.is_dir(), "authorized sample data is unavailable")
 class BrowserAcceptanceTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # Missing authorized data is a hard failure, never an acceptance skip.
+        required_acceptance_inputs()
+
     def test_sample_upload_offline_replay_pm_review_export_and_restart(self):
         source_hash = hashlib.sha256(SAMPLE_WORKBOOK.read_bytes()).hexdigest()
         normalized_hash = hashlib.sha256(SAMPLE_NORMALIZED.read_bytes()).hexdigest()

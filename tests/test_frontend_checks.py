@@ -154,11 +154,34 @@ class FrontendBuildRunnerTests(unittest.TestCase):
     def test_release_all_requires_the_later_strict_runner_before_build(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = self.make_root(temporary)
+            absent_runner = root / "tests/run_release_checks.py"
             with patch.object(run_frontend_checks, "REPO_ROOT", root), patch.object(
+                run_frontend_checks, "RELEASE_RUNNER", absent_runner
+            ), patch.object(
                 run_frontend_checks.subprocess, "run"
             ) as run:
                 self.assertNotEqual(run_frontend_checks.main(["--release-all"]), 0)
             run.assert_not_called()
+
+    def test_release_all_delegates_only_after_successful_build(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self.make_root(temporary)
+            runner = root / "tests/run_release_checks.py"
+            runner.parent.mkdir(parents=True)
+            runner.write_text("# disposable runner marker\n", encoding="utf-8")
+            completed = run_frontend_checks.subprocess.CompletedProcess([], 0)
+            with patch.object(run_frontend_checks, "REPO_ROOT", root), patch.object(
+                run_frontend_checks, "RELEASE_RUNNER", runner
+            ), patch.object(run_frontend_checks, "build_frontend") as build, patch.object(
+                run_frontend_checks.subprocess, "run", return_value=completed
+            ) as run:
+                self.assertEqual(run_frontend_checks.main(["--release-all"]), 0)
+            build.assert_called_once_with()
+            run.assert_called_once_with(
+                [run_frontend_checks.sys.executable, str(runner), "--all"],
+                cwd=root,
+                check=False,
+            )
 
 
 if __name__ == "__main__":
