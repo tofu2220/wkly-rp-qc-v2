@@ -10,9 +10,9 @@ from pathlib import Path
 from unittest.mock import patch
 from uuid import uuid4
 
+import run_release_checks
 import test_demo_outcome
 import test_disposition_packet
-import run_release_checks
 
 
 class ArchivedEvidenceHarnessTests(unittest.TestCase):
@@ -50,9 +50,9 @@ class ArchivedEvidenceHarnessTests(unittest.TestCase):
             if event.get("kind") != "record_confirmation"
         ]
         test_disposition_packet.resign_current_revision(missing_confirmation)
-        with patch.object(test_disposition_packet, "load_packet", return_value=(packet_text, missing_confirmation)):
-            with self.assertRaisesRegex(ValueError, "record_confirmation"):
-                test_disposition_packet.run_artifact_gate("review_recorded", require_confirmation=True)
+        with patch.object(test_disposition_packet, "load_packet", return_value=(packet_text, missing_confirmation)), \
+             self.assertRaisesRegex(ValueError, "record_confirmation"):
+            test_disposition_packet.run_artifact_gate("review_recorded", require_confirmation=True)
 
     def test_required_fixture_preflight_fails_with_actionable_missing_paths(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -110,6 +110,7 @@ class ArchivedEvidenceHarnessTests(unittest.TestCase):
         passed = {"setup": "passed", "call": "passed", "teardown": "passed"}
         self.assertTrue(run_release_checks.pytest_evidence_passes(["a::test_ok"], ["a::test_ok"], {"a::test_ok": passed}, 0))
         self.assertFalse(run_release_checks.pytest_evidence_passes([], [], {}, 0))
+        self.assertFalse(run_release_checks.pytest_evidence_passes(["a::test_ok", "a::test_ok"], ["a::test_ok", "a::test_ok"], {"a::test_ok": passed}, 0))
         self.assertFalse(run_release_checks.pytest_evidence_passes(["a::test_ok"], [], {}, 0))
         self.assertFalse(run_release_checks.pytest_evidence_passes(["a::test_ok"], ["a::test_ok"], {"a::test_ok": {"setup": "skip"}}, 0))
         self.assertFalse(run_release_checks.pytest_evidence_passes(["a::test_ok"], ["a::test_ok"], {"a::test_ok": {"setup": "passed", "call": "failed", "teardown": "passed"}}, 1))
@@ -157,6 +158,41 @@ class ArchivedEvidenceHarnessTests(unittest.TestCase):
         finally:
             temporary.cleanup()
         self.assertFalse(evidence.exists())
+
+    def test_pytest_runner_executes_browser_and_backend_in_separate_processes(self):
+        temporary = tempfile.TemporaryDirectory()
+        root = Path(temporary.name)
+        browser_dir = root / "tests" / "browser"
+        backend_dir = root / "tests"
+        browser_dir.mkdir(parents=True)
+        pid_log = root / "pids.txt"
+        test_body = (
+            "import os\n"
+            "from pathlib import Path\n"
+            "def test_process_is_recorded():\n"
+            "    with Path(os.environ['RUN_PID_LOG']).open('a') as log:\n"
+            "        log.write(str(os.getpid()) + '\\n')\n"
+            "    assert True\n"
+        )
+        browser_test = browser_dir / "test_browser_sample.py"
+        backend_test = backend_dir / "test_backend_sample.py"
+        browser_test.write_text(test_body, encoding="utf-8")
+        backend_test.write_text(test_body, encoding="utf-8")
+        evidence = root / "evidence"
+        evidence.mkdir()
+        try:
+            with patch.dict(os.environ, {"RUN_PID_LOG": str(pid_log)}):
+                result = run_release_checks._run_pytest([str(browser_test), str(backend_test)], evidence)
+
+            process_ids = pid_log.read_text(encoding="utf-8").splitlines()
+            self.assertTrue(result["passed"], result)
+            self.assertEqual(result["collected_count"], 2)
+            self.assertEqual(result["executed_count"], 2)
+            self.assertEqual(result["collected_ids"], result["executed_ids"])
+            self.assertEqual(len(process_ids), 2)
+            self.assertEqual(len(set(process_ids)), 2)
+        finally:
+            temporary.cleanup()
 
 
 if __name__ == "__main__":

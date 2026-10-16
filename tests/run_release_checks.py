@@ -11,15 +11,14 @@ import argparse
 import io
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 from typing import Any
 
 import pytest
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TESTS_DIR = Path(__file__).resolve().parent
@@ -93,11 +92,18 @@ def pytest_evidence_passes(
     return (
         exit_code == int(pytest.ExitCode.OK)
         and bool(collected_ids)
+        and len(collected_ids) == len(set(collected_ids))
         and collected_ids == executed_ids
         and len(collected_ids) == len(executed_ids)
         and set(outcomes) == set(collected_ids)
         and all(phases == {phase: "passed" for phase in expected_phases} for phases in outcomes.values())
     )
+
+
+def _is_browser_nodeid(nodeid: str) -> bool:
+    path = Path(nodeid.split("::", 1)[0])
+    parts = path.parts
+    return any(parts[index : index + 2] == ("tests", "browser") for index in range(len(parts) - 1))
 
 
 _PYTEST_EVIDENCE_PLUGIN = '''
@@ -153,7 +159,7 @@ def _run_pytest(targets: list[str], evidence: Path) -> dict[str, Any]:
     try:
         collection = subprocess.run(
             [sys.executable, "-m", "pytest", "-p", "gsd_release_pytest_plugin", "--collect-only", "-q", *targets],
-            cwd=REPO_ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=900,
+            cwd=REPO_ROOT, env=env, capture_output=True, check=False, timeout=900,
         )
     except subprocess.TimeoutExpired as error:
         (evidence / "pytest-collection.stdout.log").write_bytes(_raw_bytes(error.stdout))
@@ -185,38 +191,67 @@ def _run_pytest(targets: list[str], evidence: Path) -> dict[str, Any]:
             "error": "collection failed or selected zero tests",
         }
 
-    execution_report = evidence / "pytest-execution.json"
-    env["GSD_RELEASE_EVIDENCE_REPORT"] = str(execution_report)
-    try:
-        execution = subprocess.run(
-            [sys.executable, "-m", "pytest", "-p", "gsd_release_pytest_plugin", "-q", "-s", *collected_ids],
-            cwd=REPO_ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=900,
-        )
-    except subprocess.TimeoutExpired as error:
-        (evidence / "pytest-execution.stdout.log").write_bytes(_raw_bytes(error.stdout))
-        (evidence / "pytest-execution.stderr.log").write_bytes(_raw_bytes(error.stderr))
-        return {
-            "collection_exit_code": collect_code,
-            "execution_exit_code": 124,
-            "collected_ids": collected_ids,
-            "executed_ids": [],
-            "collected_count": len(collected_ids),
-            "executed_count": 0,
-            "outcomes": {},
-            "exact_ids_match": False,
-            "passed": False,
-            "error": "execution subprocess timed out and was terminated",
-        }
-    (evidence / "pytest-execution.stdout.log").write_bytes(_raw_bytes(execution.stdout))
-    (evidence / "pytest-execution.stderr.log").write_bytes(_raw_bytes(execution.stderr))
-    run_code = execution.returncode
-    try:
-        execution_data = json.loads(execution_report.read_text(encoding="utf-8"))
-        executed_ids = execution_data["nodeids"]
-        outcomes = execution_data["outcomes"]
-    except (OSError, json.JSONDecodeError, KeyError):
-        executed_ids, outcomes = [], {}
-    executed = [nodeid for nodeid, phases in outcomes.items() if "call" in phases]
+    groups = {
+        "backend": [nodeid for nodeid in collected_ids if not _is_browser_nodeid(nodeid)],
+        "browser": [nodeid for nodeid in collected_ids if _is_browser_nodeid(nodeid)],
+    }
+    groups = {name: nodeids for name, nodeids in groups.items() if nodeids}
+    outcomes: dict[str, dict[str, str]] = {}
+    executed_nodeids: list[str] = []
+    execution_nodeids: list[str] = []
+    execution_codes: dict[str, int] = {}
+    execution_groups: dict[str, dict[str, Any]] = {}
+    execution_ids_match = True
+    stdout_logs: list[bytes] = []
+    stderr_logs: list[bytes] = []
+    for name, nodeids in groups.items():
+        execution_report = evidence / f"pytest-execution-{name}.json"
+        env["GSD_RELEASE_EVIDENCE_REPORT"] = str(execution_report)
+        try:
+            execution = subprocess.run(
+                [sys.executable, "-m", "pytest", "-p", "gsd_release_pytest_plugin", "-q", "-s", *nodeids],
+                cwd=REPO_ROOT, env=env, capture_output=True, check=False, timeout=900,
+            )
+        except subprocess.TimeoutExpired as error:
+            stdout = _raw_bytes(error.stdout)
+            stderr = _raw_bytes(error.stderr)
+            (evidence / f"pytest-execution-{name}.stdout.log").write_bytes(stdout)
+            (evidence / f"pytest-execution-{name}.stderr.log").write_bytes(stderr)
+            stdout_logs.append(f"=== {name} (timed out) ===\n".encode() + stdout)
+            stderr_logs.append(f"=== {name} (timed out) ===\n".encode() + stderr)
+            execution_codes[name] = 124
+            execution_ids_match = False
+            continue
+
+        stdout = _raw_bytes(execution.stdout)
+        stderr = _raw_bytes(execution.stderr)
+        (evidence / f"pytest-execution-{name}.stdout.log").write_bytes(stdout)
+        (evidence / f"pytest-execution-{name}.stderr.log").write_bytes(stderr)
+        stdout_logs.append(f"=== {name} ===\n".encode() + stdout)
+        stderr_logs.append(f"=== {name} ===\n".encode() + stderr)
+        execution_codes[name] = execution.returncode
+        try:
+            execution_data = json.loads(execution_report.read_text(encoding="utf-8"))
+            group_nodeids = execution_data["nodeids"]
+            group_outcomes = execution_data["outcomes"]
+        except (OSError, json.JSONDecodeError, KeyError):
+            group_nodeids, group_outcomes = [], {}
+        execution_ids_match = execution_ids_match and group_nodeids == nodeids
+        execution_groups[name] = {"expected_ids": nodeids, "executed_ids": group_nodeids}
+        execution_nodeids.extend(group_nodeids)
+        outcomes.update(group_outcomes)
+        executed_nodeids.extend(nodeid for nodeid, phases in group_outcomes.items() if "call" in phases)
+
+    (evidence / "pytest-execution.stdout.log").write_bytes(b"\n".join(stdout_logs))
+    (evidence / "pytest-execution.stderr.log").write_bytes(b"\n".join(stderr_logs))
+    run_code = 0 if execution_codes and all(code == int(pytest.ExitCode.OK) for code in execution_codes.values()) else 1
+    executed_ids = [nodeid for nodeid in collected_ids if nodeid in executed_nodeids]
+    execution_ids_match = (
+        execution_ids_match
+        and len(execution_nodeids) == len(collected_ids)
+        and set(execution_nodeids) == set(collected_ids)
+    )
+    executed = [nodeid for nodeid in collected_ids if "call" in outcomes.get(nodeid, {})]
     mandatory_bad = {
         nodeid: phases for nodeid, phases in outcomes.items()
         if any(value in {"failed", "skip", "xfail"} for value in phases.values())
@@ -230,9 +265,12 @@ def _run_pytest(targets: list[str], evidence: Path) -> dict[str, Any]:
         "executed_count": len(executed),
         "outcomes": outcomes,
         "bad_outcomes": mandatory_bad,
-        "exact_ids_match": collected_ids == executed_ids == executed,
+        "execution_codes": execution_codes,
+        "execution_groups": execution_groups,
+        "exact_ids_match": execution_ids_match and collected_ids == executed_ids == executed,
         "passed": (
-            collected_ids == executed_ids
+            execution_ids_match
+            and collected_ids == executed_ids
             and not mandatory_bad
             and pytest_evidence_passes(collected_ids, executed, outcomes, run_code)
         ),

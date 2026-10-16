@@ -51,16 +51,35 @@ An invalid saved response remains invalid: replay preserves failure diagnostics 
 
 ## Local browser review
 
-Install the project dependencies and start the local-only web app:
+Install the locked Python and frontend dependencies, then build the production assets served by FastAPI:
 
 ```bash
-uv sync
-uv run wkly-rp-qc-web
+uv sync --locked
+npm --prefix frontend ci
+npm --prefix frontend run build
 ```
 
-Open `http://127.0.0.1:8000`. The app binds only to localhost and stores the SQLite database and uploaded workbook versions under `~/.local/share/wkly-rp-qc-v2/` by default. Use `--data-dir PATH` to choose a different local storage directory, or `--replay-root PATH` to add a directory containing historical replay runs. The default replay root is `./results`.
+The app runs as one local FastAPI server; there is no production Node server or CDN dependency. Start it with explicit storage and replay paths:
 
-Uploading a workbook only imports and previews it. Review mapping, draft/period warnings, project aliases, and overlapping sources before selecting a scope. A replay is offered only when its normalized-input hash and scope match; no match is shown as **no AI result available**, never as a clean pass. This release runs offline replay only: it does not load provider credentials or call a model. Stop the server with Ctrl+C.
+```bash
+uv run --locked wkly-rp-qc-web \
+  --data-dir "$HOME/.local/share/wkly-rp-qc-v2" \
+  --replay-root "$PWD/results"
+```
+
+Open `http://127.0.0.1:8000/app/`. The server binds only to localhost. The SQLite database and uploaded workbook versions live in the selected `--data-dir`; historical replay runs are read from `--replay-root`. Keep those paths local and backed up as appropriate. Stop the server with Ctrl+C.
+
+Uploading a workbook only imports and previews it. Review mapping, draft/period warnings, project aliases, and overlapping sources before selecting a scope. A replay is offered only when its normalized-input hash and scope match; no match is shown as **no AI result available**, never as a clean pass. This release runs offline replay only: it does not load provider credentials or call a model.
+
+To run the strict release gate, keep the required local workbook, normalized export, exact saved replay, and frozen disposition/reference inputs available at their expected paths. Missing inputs fail preflight; required tests may not be skipped. The command rebuilds the frontend, validates the emitted asset graph, then records exact pytest and unittest execution evidence:
+
+```bash
+DISPOSITION_EXPECT_STAGE=review_recorded \
+DISPOSITION_REQUIRE_CONFIRMATION=1 \
+uv run --locked python tests/run_frontend_checks.py --release-all
+```
+
+Python browser-test setup uses the locked Playwright dependency. Provision Chromium with `uv run --locked playwright install chromium` where the host does not provide a compatible browser. Runtime browser/server checks remain offline and use isolated temporary data; local evidence fixtures are not included in the wheel or source checkout package.
 
 ## Severity policy and provenance
 
