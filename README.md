@@ -79,7 +79,19 @@ DISPOSITION_REQUIRE_CONFIRMATION=1 \
 uv run --locked python tests/run_frontend_checks.py --release-all
 ```
 
-Python browser-test setup uses the locked Playwright dependency. Provision Chromium with `uv run --locked playwright install chromium` where the host does not provide a compatible browser. Runtime browser/server checks remain offline and use isolated temporary data; local evidence fixtures are not included in the wheel or source checkout package.
+Python browser-test setup uses the locked Playwright dependency. Provision Chromium with `uv run --locked playwright install chromium` where the host does not provide a compatible browser. Runtime browser/server checks remain offline and use isolated temporary data. Acceptance workbooks, frozen records, and replay files are local test fixtures: they are not bundled into wheel or sdist artifacts, and deployments must not depend on fixture files being present.
+
+The strict release gate requires the local acceptance fixture inventory below. The default paths are relative to the repository root; `WKLY_RP_QC_FIXTURE_ROOT` relocates that inventory, while the individual `WKLY_RP_QC_*` variables can override a specific path. Missing files, a wrong disposition stage/confirmation, empty or mismatched test execution, failures, skips, and xfails all make the gate fail. Do not point runtime checks at a PM's persistent application data directory.
+
+| Input | Default repository path |
+|---|---|
+| Source workbook | `docs/Khối SMC_Báo cáo tuần chi tiết.xlsx` |
+| Normalized source | `download/1-raw/normalized_rows.json` |
+| Exact saved replay | `results/smart-parking/20261012T031440747089Z/` (including `run_notes.md`, `extraction_response.json`, and `assessment_response.json`) |
+| Frozen disposition packet and candidate/reference records | `docs/phase-4-evaluation/review-dispositions-v1.md`, `candidate-cases.json`, `business-review-form.md`, and `gpt-6.1-draft-review.md` |
+| Other frozen packet inputs | Exact inventory in `tests/test_disposition_packet.py::EXPECTED_HASHES` |
+
+The runtime/browser and installed-package checks use temporary data roots and separate provider/backend and browser outbound-request guards. Release evidence is written under a temporary `wkly-release-checks-*` directory and reports the exact collected/executed pytest node IDs, outcomes, unittest IDs/count, and raw logs. Do not round counts or treat a partial green sub-run as the release gate.
 
 ## Severity policy and provenance
 
