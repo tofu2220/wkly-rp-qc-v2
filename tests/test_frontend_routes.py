@@ -3,9 +3,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import wkly_rp_qc_v2.web as web
 from test_jobs import job_fixture
 from test_web import ASGITestClient
+
+import wkly_rp_qc_v2.web as web
+from wkly_rp_qc_v2.jobs import JobWorker
+from wkly_rp_qc_v2.store import create_job, get_job
 
 
 class _PackageRoot:
@@ -69,6 +72,54 @@ class FrontendRouteTests(unittest.TestCase):
             self.assertEqual(incomplete_export.status_code, 409)
             self.assertNotIn("<html", unknown_api.text.lower())
             self.assertEqual(method_error.status_code, 405)
+
+    def test_route_errors_and_saved_legacy_download_mime_remain_distinct(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            database, storage, _, job_id = job_fixture(root)
+            JobWorker(database, storage, (root / "replays",)).process_job(job_id)
+            completed = get_job(database, job_id)
+            assert completed is not None
+            pending_job_id = create_job(
+                database,
+                workbook_id=completed["workbook_id"],
+                previous_snapshot_id=completed["previous_snapshot_id"],
+                current_snapshot_id=completed["current_snapshot_id"],
+                project_label=completed["project_label"],
+                role=completed["role"],
+                aliases=completed["aliases"],
+                mode=completed["mode"],
+                replay_bundle_id=completed["replay_bundle_id"],
+            )
+            with ASGITestClient(web.create_app(web.WebSettings(database, storage, ()))) as client:
+                job = client.get(f"/jobs/{job_id}")
+                csv_file = client.get(f"/jobs/{job_id}/export.csv")
+                xlsx_file = client.get(f"/jobs/{job_id}/export.xlsx")
+                markdown = client.get(f"/jobs/{job_id}/review.md")
+                unknown_api = client.get("/api/unknown")
+                missing_asset = client.get("/app/assets/missing.js")
+                missing_static = client.get("/static/missing.css")
+                missing_download = client.get("/jobs/999999/export.xlsx")
+                incomplete_export = client.get(f"/jobs/{pending_job_id}/export.csv")
+                invalid_method = client.post(f"/jobs/{job_id}/export.csv")
+
+            self.assertEqual(job.status_code, 200)
+            self.assertIn("text/html", job.headers["content-type"])
+            self.assertEqual(csv_file.status_code, 200)
+            self.assertIn("text/csv", csv_file.headers["content-type"])
+            self.assertTrue(csv_file.content.startswith(b"\xef\xbb\xbf"))
+            self.assertEqual(xlsx_file.status_code, 200)
+            self.assertIn("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", xlsx_file.headers["content-type"])
+            self.assertEqual(markdown.status_code, 200)
+            self.assertIn("text/markdown", markdown.headers["content-type"])
+            self.assertEqual(unknown_api.status_code, 404)
+            self.assertIn("application/json", unknown_api.headers["content-type"])
+            self.assertEqual(missing_asset.status_code, 404)
+            self.assertNotIn("text/html", missing_asset.headers["content-type"])
+            self.assertEqual(missing_static.status_code, 404)
+            self.assertEqual(missing_download.status_code, 404)
+            self.assertEqual(incomplete_export.status_code, 409)
+            self.assertEqual(invalid_method.status_code, 405)
 
     def test_missing_frontend_build_returns_503_without_breaking_legacy_home(self):
         with tempfile.TemporaryDirectory() as temporary:
