@@ -76,19 +76,19 @@ The packaged default policy contains no confirmed severity decisions. Proposed m
 
 ## Verification
 
-After installing locked dependencies, the self-contained core/transport regression is:
+After installing locked dependencies, the following explicit unittest selection runs the self-contained core/transport/web checks without requiring private business fixtures:
 
 ```bash
-uv run --locked pytest -q \
-  tests/test_assessment.py tests/test_cli.py tests/test_core.py \
-  tests/test_evidence.py tests/test_openrouter.py tests/test_policy.py \
-  tests/test_policy_report.py tests/test_replay.py tests/test_replay_catalog.py \
-  tests/test_store.py tests/test_web.py tests/test_web_api.py \
-  tests/test_web_jobs.py tests/test_web_review.py tests/test_web_export.py \
-  tests/test_workbook_tools.py
+PYTHONPATH=tests uv run --locked python -m unittest \
+  test_assessment test_cli test_core test_evidence test_openrouter \
+  test_policy test_policy_report test_replay test_replay_catalog \
+  test_store test_web test_web_api test_web_jobs test_web_review \
+  test_web_export test_workbook_tools
 ```
 
-Workbook-preview and tool-return browser tests generate isolated technical workbooks:
+The pytest harness deliberately enforces the private frozen-record preflight at session start, even for a focused test selection. Plain pytest, the browser runner below and the full release gate therefore require that separately supplied local inventory. Missing private inputs remain an error; do not disable the preflight to describe a focused run as full acceptance.
+
+Workbook-preview and tool-return browser scenarios generate isolated technical workbooks, but their pytest invocation still requires the session preflight inventory:
 
 ```bash
 uv run --locked python tests/run_frontend_checks.py --pytest \
