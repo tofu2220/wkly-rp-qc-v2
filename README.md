@@ -2,6 +2,20 @@
 
 A local application for comparing a previous reporting period's plans with the next period's reported results, issues and follow-up plans. Findings retain source quotations and spreadsheet references for human review. The application checks reporting quality; it does not independently verify that work was completed.
 
+## Chạy thử nhanh
+
+**Cần có:** Git, [uv](https://docs.astral.sh/uv/getting-started/installation/) và Node.js 24 LTS.
+
+Chạy lệnh sau từ thư mục chưa có `wkly-rp-qc-v2` (Bash/zsh, CMD hoặc PowerShell 7+):
+
+```bash
+git clone https://github.com/tofu2220/wkly-rp-qc-v2.git && npm --prefix wkly-rp-qc-v2 ci && npm --prefix wkly-rp-qc-v2 run build && uv run --project wkly-rp-qc-v2 --locked --no-dev wkly-rp-qc-web
+```
+
+Mở **http://127.0.0.1:8000/app/** → tải file `.xlsx` lên để thử. Dừng bằng **Ctrl+C**.
+
+> Lần đầu cần tải dependencies và build. Bản hiện tại hỗ trợ xem nguồn workbook và giao diện; chưa chạy AI mới trên web, nên không cần API key. Dữ liệu mẫu không nằm trong repo.
+
 ## Requirements
 
 - Python 3.12 or newer and [uv](https://docs.astral.sh/uv/).
