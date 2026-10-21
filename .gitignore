@@ -1,20 +1,67 @@
+# Local AI/GSD planning and tool configuration
+.planning/
+.gsd/
+.superpowers/
+.claude/
+.opencode/
+.agents/
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+skills-lock.json
+
+# Private documentation, reports and input data
+/docs/
+/download/
+/results/
+/private-data/
+*.xlsx
+*.xls
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+*.db
+*.db-*
+*.log
+
+# Credentials: only placeholder examples may be tracked
+.env
+.env.*
+!.env.example
+
+# Machine-local environments and editor settings
+.venv/
+venv/
+env/
+ENV/
+.direnv/
+.envrc
+.python-version
+/flake.nix
+/flake.lock
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*.swo
+
 # Python-generated files
 __pycache__/
 *.py[oc]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
 build/
 dist/
 wheels/
 *.egg-info
 
-# Virtual environments
-.venv
+# Frontend dependencies, build output and browser-test artifacts
 node_modules/
 src/wkly_rp_qc_v2/frontend_dist/
 test-results/
 playwright-report/
-
-# Local report runs and credentials
-results/
-.env
-.env.*
-!.env.example
