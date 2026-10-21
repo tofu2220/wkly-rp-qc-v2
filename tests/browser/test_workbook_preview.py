@@ -78,6 +78,46 @@ def source_status_workbook(path: Path) -> Path:
     return path
 
 
+def project_comparison_workbook(path: Path) -> Path:
+    workbook = Workbook()
+    current = workbook.active
+    current.title = "BC Tuần 07.09 - 12.09"
+    unmapped = workbook.create_sheet("Bố cục chưa nhận diện")
+    previous = workbook.create_sheet("BC Tuần 31.08 - 05.09")
+    earlier = workbook.create_sheet("BC Tuần 15.08 - 20.08")
+
+    def populate(sheet, smart_actual: str | None, anat_actual: str, *, spaced_actual: str | None = None):
+        for address, value in {
+            "A4": "STT", "B4": "Sản phẩm", "C4": "Kết quả tuần",
+            "D4": "Kế hoạch tuần", "E4": "Vấn đề / rủi ro", "F4": "PIC",
+            "A5": "1", "B5": "SMART PARKING", "A6": "1.1", "B6": "PTSP",
+            "A7": "2", "B7": "ANAT GSM", "A8": "2.1", "B8": "QC",
+            "C8": anat_actual, "D8": "ANAT-PLAN-" + sheet.title, "F8": "ANAT-PIC",
+        }.items():
+            sheet[address] = value
+        if smart_actual is not None:
+            sheet["C6"] = smart_actual
+            sheet["D6"] = "SMART-PLAN-" + sheet.title
+            sheet["F6"] = "SMART-PIC"
+        if spaced_actual is not None:
+            sheet["A9"] = "3"
+            sheet["B9"] = "SMART PARKING "
+            sheet["A10"] = "3.1"
+            sheet["B10"] = "PTSP"
+            sheet["C10"] = spaced_actual
+            sheet["D10"] = "SPACED-PLAN"
+            sheet["F10"] = "SPACED-PIC"
+
+    populate(current, "SMART-CURRENT-ONLY", "ANAT-CURRENT-ONLY")
+    populate(previous, "SMART-PREVIOUS-ONLY", "ANAT-PREVIOUS-ONLY")
+    populate(earlier, None, "ANAT-EARLIEST-ONLY", spaced_actual="SPACED-NAME-ONLY")
+    unmapped["A1"] = "Custom project"
+    unmapped["A2"] = "RAW-ONLY-PROJECT"
+    workbook.save(path)
+    workbook.close()
+    return path
+
+
 def test_catalog_identity(page: Page, app_server, app_url: str, external_attempts, tmp_path: Path):
     page.goto(f"{app_url}/app/")
     expect(page.get_by_role("heading", name="Chưa có workbook đã lưu")).to_be_visible()
@@ -126,6 +166,67 @@ def test_dashboard_shell_keeps_unimplemented_steps_unavailable(page: Page, app_s
     expect(page.get_by_role("button", name="Dùng workbook minh họa")).to_have_count(0)
     page.set_viewport_size({"width": 320, "height": 900})
     assert page.evaluate("document.documentElement.scrollWidth <= document.documentElement.clientWidth")
+
+
+def test_project_picker_filters_exact_project_across_multiple_sheets(page: Page, app_server, app_url: str, external_attempts, tmp_path: Path):
+    page.goto(f"{app_url}/app/")
+    source = project_comparison_workbook(tmp_path / "projects.xlsx")
+    with page.expect_response(lambda response: response.url.endswith("/api/workbooks") and response.request.method == "POST"):
+        page.get_by_label("Chọn tệp Excel").set_input_files(source)
+        page.get_by_role("button", name="Tải và xem trước").click()
+    expect(page.get_by_role("heading", name="projects.xlsx")).to_be_visible()
+
+    project_picker = page.get_by_role("region", name="Chọn một dự án trong workbook")
+    expect(project_picker).to_be_visible()
+    expect(page.get_by_text("SMART-CURRENT-ONLY", exact=True)).to_have_count(0)
+    expect(project_picker.get_by_role("button", name="Chọn dự án SMART PARKING", exact=True)).to_be_visible()
+    expect(project_picker.get_by_role("button", name="Chọn dự án ANAT GSM", exact=True)).to_be_visible()
+    expect(project_picker.get_by_role("button", name=re.compile("SMART PARKING.*khoảng trắng cuối"))).to_be_visible()
+    expect(page.get_by_text("RAW-ONLY-PROJECT", exact=True)).to_have_count(0)
+    expect(page.get_by_text("chưa thể xác định dự án nào có trong sheet", exact=False)).to_be_visible()
+    search = project_picker.get_by_label("Tìm dự án trong workbook")
+    search.fill("ANAT")
+    expect(project_picker.get_by_role("button", name="Chọn dự án ANAT GSM", exact=True)).to_be_visible()
+    expect(project_picker.get_by_role("button", name="Chọn dự án SMART PARKING", exact=True)).to_have_count(0)
+    search.fill("")
+
+    project_picker.get_by_role("button", name="Chọn dự án SMART PARKING", exact=True).click()
+    expect(page.get_by_role("heading", name="SMART PARKING", exact=True)).to_be_visible()
+    expect(page.get_by_text("SMART-CURRENT-ONLY", exact=True)).to_be_visible()
+    expect(page.get_by_text("SMART-PREVIOUS-ONLY", exact=True)).to_be_visible()
+    expect(page.get_by_text("ANAT-CURRENT-ONLY", exact=True)).to_have_count(0)
+    expect(page.get_by_text("SPACED-NAME-ONLY", exact=True)).to_have_count(0)
+    expect(page.get_by_text("RAW-ONLY-PROJECT", exact=True)).to_have_count(0)
+    expect(page.get_by_role("button", name="Bỏ chọn kỳ BC Tuần 31.08 - 05.09")).to_have_attribute("aria-pressed", "true")
+
+    page.get_by_role("button", name="Bỏ chọn kỳ BC Tuần 31.08 - 05.09").click()
+    expect(page.get_by_text("SMART-PREVIOUS-ONLY", exact=True)).to_have_count(0)
+    expect(page.get_by_text("SMART-CURRENT-ONLY", exact=True)).to_be_visible()
+    page.get_by_role("button", name="Chọn kỳ BC Tuần 31.08 - 05.09").click()
+    page.get_by_role("button", name="Đổi dự án").click()
+    project_picker.get_by_role("button", name="Chọn dự án ANAT GSM", exact=True).click()
+    expect(page.get_by_text("ANAT-CURRENT-ONLY", exact=True)).to_be_visible()
+    expect(page.get_by_text("ANAT-PREVIOUS-ONLY", exact=True)).to_be_visible()
+    expect(page.get_by_text("SMART-CURRENT-ONLY", exact=True)).to_have_count(0)
+
+    page.get_by_role("button", name="Đổi dự án").click()
+    spaced_option = project_picker.get_by_role("button", name=re.compile("SMART PARKING.*khoảng trắng cuối"))
+    spaced_option.click()
+    expect(page.get_by_text("SPACED-NAME-ONLY", exact=True)).to_be_visible()
+    expect(page.get_by_text("SMART-CURRENT-ONLY", exact=True)).to_have_count(0)
+    page.set_viewport_size({"width": 320, "height": 900})
+    assert page.evaluate("document.documentElement.scrollWidth <= document.documentElement.clientWidth")
+    period_comparison = page.get_by_role("region", name="Đối chiếu các kỳ đã chọn")
+    assert period_comparison.evaluate("element => element.scrollWidth > element.clientWidth")
+    page.get_by_role("button", name="Đổi dự án").click()
+    project_cards = project_picker.locator(".project-list")
+    assert project_cards.evaluate("element => element.scrollWidth > element.clientWidth")
+    project_picker.get_by_role("button", name="Chọn dự án SMART PARKING", exact=True).click()
+    expect(page.get_by_role("heading", name="SMART PARKING", exact=True)).to_be_visible()
+    expect(page.get_by_text("ANAT-CURRENT-ONLY", exact=True)).to_have_count(0)
+    page.get_by_role("button", name="Xem nguồn workbook").click()
+    expect(page.get_by_role("heading", name="Các sheet trong nguồn")).to_be_visible()
+    expect(page.get_by_role("list", name="Các sheet trong workbook")).to_be_visible()
 
 
 def test_stale_selection(page: Page, app_server, app_url: str, external_attempts, tmp_path: Path):
@@ -251,7 +352,7 @@ def test_empty_source_states(page: Page, app_server, app_url: str, external_atte
         page.get_by_label("Chọn tệp Excel").set_input_files(unknown)
         page.get_by_role("button", name="Tải và xem trước").click()
     expect(page.get_by_role("heading", name="unknown.xlsx")).to_be_visible()
-    expect(page.get_by_text("Cần thiết lập cột", exact=True)).to_be_visible()
+    expect(page.locator(".sheet-reason")).to_have_text("Cần thiết lập cột")
     page.get_by_role("button", name="Xem sheet BC Tuần chưa xác định").click()
     expect(page.get_by_text("số 0 không có nghĩa sheet Excel trống", exact=False)).to_be_visible()
 
@@ -263,10 +364,16 @@ def test_preview_overview(page: Page, app_server, app_url: str, external_attempt
         page.get_by_label("Chọn tệp Excel").set_input_files(source)
         page.get_by_role("button", name="Tải và xem trước").click()
     expect(page.get_by_role("heading", name="periods.xlsx")).to_be_visible()
-    summary = page.get_by_role("table", name="Tổng quan các sheet")
-    rows = summary.get_by_role("row")
-    expect(rows.nth(1)).to_contain_text("BC Tuần 07.09 - 12.09")
-    expect(rows.nth(2)).to_contain_text("BC Tuần 31.08 - 05.09")
+    attention = page.get_by_role("region", name="Mục cần chú ý từ nguồn")
+    sheet_list = page.get_by_role("list", name="Các sheet trong workbook")
+    expect(attention).to_be_visible()
+    expect(attention).to_contain_text("Đây không phải kết quả phân tích chất lượng")
+    expect(page.get_by_label("Tìm tên sheet")).to_be_visible()
+    expect(page.get_by_role("group", name="Lọc sheet")).to_be_visible()
+    items = sheet_list.get_by_role("listitem")
+    expect(items).to_have_count(2)
+    expect(items.nth(0)).to_contain_text("BC Tuần 07.09 - 12.09")
+    expect(items.nth(1)).to_contain_text("BC Tuần 31.08 - 05.09")
     expect(page.get_by_role("heading", name="Chi tiết sheet")).to_have_count(0)
     page.get_by_role("button", name="Xem sheet BC Tuần 07.09 - 12.09").click()
     expect(page.get_by_role("heading", name="Chi tiết sheet: BC Tuần 07.09 - 12.09")).to_be_visible()
@@ -286,7 +393,130 @@ def test_preview_overview(page: Page, app_server, app_url: str, external_attempt
               }).map((element) => ({tag: element.tagName, id: element.id, className: String(element.className), width: element.getBoundingClientRect().width, right: element.getBoundingClientRect().right, html: element.outerHTML.slice(0, 100)}))
     })""")
     assert overflow["document"] <= overflow["viewport"], overflow
-    assert summary.evaluate("element => element.parentElement.scrollWidth > element.parentElement.clientWidth")
+    assert sheet_list.evaluate("element => element.scrollWidth <= element.clientWidth")
+
+
+def test_sheet_search_filters_in_excel_order_and_attention_reveals_hidden_sheet(page: Page, app_server, app_url: str, external_attempts, tmp_path: Path):
+    page.goto(f"{app_url}/app/")
+    source = source_status_workbook(tmp_path / "search.xlsx")
+    with page.expect_response(lambda response: response.url.endswith("/api/workbooks") and response.request.method == "POST") as upload_info:
+        page.get_by_label("Chọn tệp Excel").set_input_files(source)
+        page.get_by_role("button", name="Tải và xem trước").click()
+    workbook_id = upload_info.value.json()["workbook_id"]
+    expect(page.get_by_role("heading", name=source.name)).to_be_visible()
+    expect(page).to_have_url(re.compile(rf".*/app/workbooks/{workbook_id}$"))
+    data = page.request.get(f"{app_url}/api/workbooks/{workbook_id}").json()
+    first, unmapped, conflict, year = data["sheets"]
+    year_unknown = {"status": "identified", "label": "15.08-20.08", "year": None, "start_month_day": "08-15", "conflicts": []}
+    conflict_period = {"status": "conflict", "label": "15.08-20.08", "year": None, "start_month_day": "08-15", "conflicts": ["Sheet/title period conflicts"]}
+    with sqlite3.connect(app_server["database"]) as connection:
+            connection.execute("UPDATE report_snapshots SET mapping_status='confirmed', sheet_state='draft_or_incomplete', reporting_period_json=? WHERE snapshot_id=?", (json.dumps(year_unknown), first["snapshot_id"]))
+            connection.execute("UPDATE report_snapshots SET mapping_status='recognized', sheet_state='not_assessed', reporting_period_json=? WHERE snapshot_id=?", (json.dumps(conflict_period), conflict["snapshot_id"]))
+            connection.execute("UPDATE report_snapshots SET mapping_status='recognized', sheet_state='not_assessed', reporting_period_json=? WHERE snapshot_id=?", (json.dumps(year_unknown), year["snapshot_id"]))
+    page.reload()
+
+    attention = page.get_by_role("region", name="Mục cần chú ý từ nguồn")
+    expect(attention.get_by_role("listitem")).to_have_count(3)
+    expect(attention).to_contain_text("Thông tin kỳ mâu thuẫn")
+    expect(attention).to_contain_text("Nháp hoặc chưa đầy đủ")
+    year_context = page.get_by_role("region", name="Thông tin năm còn thiếu")
+    expect(year_context).to_contain_text("1 sheet chưa rõ năm")
+    year_context.get_by_text("1 sheet chưa rõ năm", exact=True).click()
+    expect(year_context.get_by_role("listitem")).to_have_count(1)
+    expect(year_context).to_contain_text("Chưa rõ năm")
+    expect(page.get_by_text("Vì sao?", exact=True)).to_be_visible()
+    expect(page.get_by_role("button", name=re.compile("Đối chiếu nguồn Bố cục chưa nhận diện"))).to_be_visible()
+
+    sheet_list = page.get_by_role("list", name="Các sheet trong workbook")
+    items = sheet_list.get_by_role("listitem")
+    expect(items).to_have_count(4)
+    expect(items.nth(1)).to_contain_text("Bố cục chưa nhận diện")
+    page.get_by_role("button", name="Cần chú ý · 3").click()
+    expect(items).to_have_count(3)
+    expect(items.nth(0)).to_contain_text("BC Tuần 07.09 - 12.09")
+    page.get_by_role("button", name="Tất cả · 4").click()
+    expect(items).to_have_count(4)
+    search = page.get_by_label("Tìm tên sheet")
+    search.fill("không tồn tại")
+    expect(page.get_by_role("status", name="Số sheet đang hiển thị")).to_contain_text("0 / 4")
+    expect(page.get_by_text("Không tìm thấy sheet. Thử tên khác", exact=False)).to_be_visible()
+    search.fill("BC Tuần")
+    expect(items).to_have_count(3)
+    expect(items.nth(0)).to_contain_text("BC Tuần 07.09 - 12.09")
+    page.get_by_role("button", name=re.compile("Chưa rõ năm · 1")).click()
+    expect(page.get_by_role("button", name=re.compile("Chưa rõ năm · 1"))).to_have_attribute("aria-pressed", "true")
+    search.fill("không tồn tại")
+    page.get_by_role("button", name="Xóa tìm kiếm tên sheet").click()
+    expect(search).to_have_value("")
+    expect(page.get_by_role("button", name=re.compile("Chưa rõ năm · 1"))).to_have_attribute("aria-pressed", "true")
+    expect(items).to_have_count(1)
+    search.fill("không tồn tại")
+    page.get_by_role("button", name=re.compile("Đối chiếu nguồn Bố cục chưa nhận diện")).click()
+    detail_heading = page.get_by_role("heading", name="Chi tiết sheet: Bố cục chưa nhận diện")
+    expect(detail_heading).to_be_focused()
+    page.get_by_role("button", name=re.compile("Đối chiếu nguồn Bố cục chưa nhận diện")).click()
+    expect(detail_heading).to_be_focused()
+    expect(page.get_by_role("button", name=re.compile("Tất cả · 4"))).to_have_attribute("aria-pressed", "true")
+    assert page.url.endswith(f"?sheet={unmapped['snapshot_id']}")
+    page.set_viewport_size({"width": 320, "height": 900})
+    assert page.evaluate("document.documentElement.scrollWidth <= document.documentElement.clientWidth")
+    for selector in ("#sheet-search-1", ".sheet-filters button", ".sheet-row button", ".sheet-metadata summary"):
+        control = page.locator(selector).first
+        assert control.evaluate("element => element.getBoundingClientRect().height >= 44")
+    page.locator("#sheet-search-1").focus()
+    page.keyboard.press("Tab")
+    assert page.evaluate("document.activeElement.matches(':focus-visible') && getComputedStyle(document.activeElement).outlineStyle !== 'none'")
+    page.locator(".sheet-filters button").nth(1).focus()
+    page.keyboard.press("Enter")
+    expect(page.locator(".sheet-filters button").nth(1)).to_have_attribute("aria-pressed", "true")
+    page.locator(".sheet-row button").first.focus()
+    page.keyboard.press("Enter")
+    page.locator(".sheet-row").first.locator(".sheet-metadata summary").focus()
+    page.keyboard.press("Space")
+
+
+def test_attention_counts_are_dto_driven_and_generic_warnings_stay_secondary(page: Page, app_server, app_url: str, external_attempts, tmp_path: Path):
+    page.goto(f"{app_url}/app/")
+    source = source_status_workbook(tmp_path / "dynamic-attention.xlsx")
+    with page.expect_response(lambda response: response.url.endswith("/api/workbooks") and response.request.method == "POST") as upload_info:
+        page.get_by_label("Chọn tệp Excel").set_input_files(source)
+        page.get_by_role("button", name="Tải và xem trước").click()
+    workbook_id = upload_info.value.json()["workbook_id"]
+    expect(page.get_by_role("heading", name=source.name)).to_be_visible()
+    expect(page).to_have_url(re.compile(rf".*/app/workbooks/{workbook_id}$"))
+    data = page.request.get(f"{app_url}/api/workbooks/{workbook_id}").json()
+    sheets = data["sheets"]
+    normal_period = {"status": "identified", "label": "31.08-05.09/2026", "year": 2026, "start_month_day": "08-31", "conflicts": []}
+    unknown_period = {"status": "unknown", "label": None, "year": None, "start_month_day": None, "conflicts": []}
+    year_period = {"status": "identified", "label": "15.08-20.08", "year": None, "start_month_day": "08-15", "conflicts": []}
+    generic_warning = ["<b>Unclassified source warning</b>"]
+    with sqlite3.connect(app_server["database"]) as connection:
+        connection.execute("UPDATE report_snapshots SET mapping_status='recognized', sheet_state='not_assessed', reporting_period_json=?, warnings_json=?", (json.dumps(normal_period), json.dumps(generic_warning)))
+    page.reload()
+    attention = page.get_by_role("region", name="Mục cần chú ý từ nguồn")
+    expect(attention).to_contain_text("Chưa ghi nhận mục cần chú ý")
+    expect(attention.get_by_role("listitem")).to_have_count(0)
+    expect(page.get_by_role("button", name="Tất cả · 4")).to_be_visible()
+    expect(page.get_by_role("button", name="Cần chú ý · 0")).to_be_visible()
+    expect(page.get_by_role("button", name="Chưa rõ năm · 0")).to_be_visible()
+    first_row = page.locator(".sheet-list > li").first
+    first_row.get_by_text("Thông tin sheet", exact=True).click()
+    expect(first_row).to_contain_text("<b>Unclassified source warning</b>")
+    assert page.locator("b").count() == 0
+
+    with sqlite3.connect(app_server["database"]) as connection:
+        connection.execute("UPDATE report_snapshots SET sheet_state='draft_or_incomplete' WHERE snapshot_id=?", (sheets[0]["snapshot_id"],))
+        connection.execute("UPDATE report_snapshots SET reporting_period_json=? WHERE snapshot_id=?", (json.dumps(unknown_period), sheets[1]["snapshot_id"]))
+        connection.execute("UPDATE report_snapshots SET reporting_period_json=? WHERE snapshot_id IN (?, ?)", (json.dumps(year_period), sheets[2]["snapshot_id"], sheets[3]["snapshot_id"]))
+    page.reload()
+    attention = page.get_by_role("region", name="Mục cần chú ý từ nguồn")
+    expect(attention.get_by_role("listitem")).to_have_count(2)
+    expect(attention).to_contain_text("Chưa xác định kỳ")
+    expect(attention).to_contain_text("Nháp hoặc chưa đầy đủ")
+    expect(attention).not_to_contain_text("Unclassified source warning")
+    expect(page.get_by_role("button", name="Cần chú ý · 2")).to_be_visible()
+    year_region = page.get_by_role("region", name="Thông tin năm còn thiếu")
+    expect(year_region).to_contain_text("2 sheet chưa rõ năm")
 
 
 def test_source_disclosure(page: Page, app_server, app_url: str, external_attempts, tmp_path: Path):
@@ -323,7 +553,7 @@ def test_preview_status_warnings(page: Page, app_server, app_url: str, external_
     conflict_period = {"status": "conflict", "label": "15.08-20.08", "year": None, "start_month_day": "08-15", "conflicts": ["Sheet/title period conflicts"]}
     with sqlite3.connect(app_server["database"]) as connection:
         connection.execute(
-            "UPDATE report_snapshots SET mapping_status=?, sheet_state=?, reporting_period_json=?, warnings_json=? WHERE snapshot_id=?",
+                "UPDATE report_snapshots SET mapping_status=?, sheet_state=?, reporting_period_json=?, warnings_json=? WHERE snapshot_id=?",
                 ("confirmed", "draft_or_incomplete", json.dumps(first_period), json.dumps([
                 "Project and role share a physical header; use the recorded hierarchy",
                 "Column D can contain a more-specific role without an independent header",
@@ -332,7 +562,7 @@ def test_preview_status_warnings(page: Page, app_server, app_url: str, external_
             ]), sheets[0]["snapshot_id"]),
         )
         connection.execute(
-            "UPDATE report_snapshots SET mapping_status=?, sheet_state=?, reporting_period_json=?, warnings_json=? WHERE snapshot_id=?",
+                "UPDATE report_snapshots SET mapping_status=?, sheet_state=?, reporting_period_json=?, warnings_json=? WHERE snapshot_id=?",
             ("mapping_required", "mapping_required", "null", json.dumps(["Unknown worksheet layout; mapping is required"]), sheets[1]["snapshot_id"]),
         )
         connection.execute(
@@ -345,18 +575,27 @@ def test_preview_status_warnings(page: Page, app_server, app_url: str, external_
         )
 
     page.reload()
-    summary = page.get_by_role("table", name="Tổng quan các sheet")
-    rows = summary.get_by_role("row")
-    expect(rows.nth(1)).to_contain_text("Đã thiết lập cột")
-    expect(rows.nth(1)).to_contain_text("Nháp hoặc chưa đầy đủ")
-    expect(rows.nth(1)).to_contain_text("Chưa rõ năm")
-    expect(rows.nth(1)).to_contain_text("4 cảnh báo nguồn")
-    expect(rows.nth(2)).to_contain_text("Cần thiết lập cột")
-    expect(rows.nth(2)).to_contain_text("Chưa đọc được theo cột")
-    expect(rows.nth(2)).to_contain_text("Chưa xác định kỳ")
-    expect(rows.nth(3)).to_contain_text("Đã xác định kỳ và năm")
-    expect(rows.nth(3)).to_contain_text("0 cảnh báo nguồn")
-    expect(rows.nth(4)).to_contain_text("Thông tin kỳ mâu thuẫn")
+    attention = page.get_by_role("region", name="Mục cần chú ý từ nguồn")
+    expect(attention.get_by_role("listitem")).to_have_count(3)
+    expect(attention).to_contain_text("Cần thiết lập cột")
+    expect(attention).to_contain_text("Thông tin kỳ mâu thuẫn")
+    expect(attention).to_contain_text("Nháp hoặc chưa đầy đủ")
+    year_context = page.get_by_role("region", name="Thông tin năm còn thiếu")
+    expect(year_context.get_by_role("listitem")).to_have_count(0)
+    sheet_list = page.get_by_role("list", name="Các sheet trong workbook")
+    rows = page.locator(".sheet-list > li")
+    expect(rows.nth(0)).to_contain_text("4 cảnh báo nguồn")
+    expect(rows.nth(1)).to_contain_text("Cần thiết lập cột")
+    expect(rows.nth(2)).to_contain_text("Đã xác định kỳ và năm")
+    expect(rows.nth(3)).to_contain_text("Thông tin kỳ mâu thuẫn")
+    rows.nth(0).get_by_text("Thông tin sheet", exact=True).click()
+    expect(rows.nth(0)).to_contain_text("confirmed")
+    expect(rows.nth(0)).to_contain_text("draft_or_incomplete")
+    expect(rows.nth(0)).to_contain_text("Chưa rõ năm")
+    expect(rows.nth(0)).to_contain_text("<img src=x onerror=alert(1)>")
+    expect(rows.nth(1)).to_contain_text("Unknown worksheet layout; mapping is required")
+    rows.nth(0).get_by_text("Thông tin sheet", exact=True).click()
+    rows.nth(1).get_by_text("Thông tin sheet", exact=True).click()
 
     page.get_by_role("button", name="Xem sheet BC Tuần 07.09 - 12.09").click()
     details_disclosure = page.get_by_test_id("selected-sheet-detail").locator("details.technical-details > summary")
@@ -366,9 +605,10 @@ def test_preview_status_warnings(page: Page, app_server, app_url: str, external_
     expect(page.get_by_role("heading", name="Cột dự án và vai trò dùng chung cấu trúc")).to_be_visible()
     expect(page.get_by_role("heading", name="Cột D có thể chứa vai trò chi tiết hơn")).to_be_visible()
     expect(page.get_by_role("heading", name="Nhãn trống không được tự điền")).to_be_visible()
-    expect(page.get_by_text("<img src=x onerror=alert(1)>", exact=True)).not_to_be_visible()
+    raw_warning = "<img src=x onerror=alert(1)>"
+    expect(page.get_by_test_id("selected-sheet-detail").locator(".warning-list pre").filter(has_text=raw_warning)).not_to_be_visible()
     page.get_by_text("Cảnh báo gốc", exact=True).last.click()
-    expect(page.get_by_text("<img src=x onerror=alert(1)>", exact=True)).to_be_visible()
+    expect(page.get_by_test_id("selected-sheet-detail").locator(".warning-list pre").filter(has_text=raw_warning)).to_be_visible()
     assert page.locator("img[src='x']").count() == 0
 
 
@@ -389,7 +629,7 @@ def test_upload_tracer(page: Page, app_server, app_url: str, external_attempts, 
     page.get_by_role("button", name="Xem sheet BC Tuần 01.09 - 05.09").click()
     page.get_by_text("Dòng nguồn và vị trí ô", exact=True).click()
     expect(page.get_by_text("Reported status from source", exact=True)).to_be_visible()
-    expect(page.get_by_role("status")).to_contain_text("Đã lưu workbook, chưa chạy phân tích.")
+    expect(page.locator("p.step-note")).to_contain_text("Đã lưu workbook, chưa chạy phân tích.")
     await_empty = page.locator("#workbook-file").input_value()
     assert await_empty == ""
     assert page.url.endswith(f"/app/workbooks/{preview['workbook_id']}?sheet={preview['sheets'][0]['snapshot_id']}")

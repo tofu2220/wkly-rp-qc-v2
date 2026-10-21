@@ -17,7 +17,7 @@ function sourceCell(row: SourceRow, field: string, label: string) {
   );
 }
 
-export function SheetDetails({ sheet }: { sheet: WorkbookSheet }) {
+export function SheetDetails({ sheet, sourceDisclosureOpen = false }: { sheet: WorkbookSheet; sourceDisclosureOpen?: boolean }) {
   return (
     <section className="selected-sheet-detail" data-testid="selected-sheet-detail" aria-labelledby={`sheet-detail-${sheet.snapshot_id}`}>
       <header className="detail-heading">
@@ -75,7 +75,7 @@ export function SheetDetails({ sheet }: { sheet: WorkbookSheet }) {
         </section>
       )}
 
-      <details className="source-disclosure">
+      <details className="source-disclosure" open={sourceDisclosureOpen}>
         <summary>Dòng nguồn và vị trí ô</summary>
         {sheet.rows.length === 0 ? (
           <p>Chưa có dòng đã đọc để hiển thị trong phần này.</p>

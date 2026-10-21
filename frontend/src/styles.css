@@ -45,7 +45,36 @@ main > section, .workbook-preview > header, .attention-summary, .selected-sheet-
 .eyebrow { margin: 0 0 4px; color: var(--ink-muted); font-size: 14px; }
 .attention-summary { margin: 24px 0; background: var(--amber-tint); border-color: #d8ba85; }
 .attention-summary h3, .attention-summary p { margin-top: 0; }
-.attention-summary li + li { margin-top: 8px; }
+.attention-summary ul { display: grid; gap: 12px; margin: 16px 0 0; padding: 0; list-style: none; }
+.attention-item { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px; border-left: 4px solid var(--amber-ink); background: #fff; }
+.attention-item > span, .sheet-row h4 { min-width: 0; overflow-wrap: anywhere; }
+.year-context { margin: 24px 0; padding: 16px 24px; border: 1px solid var(--border); border-radius: 12px; color: var(--ink-muted); background: #fff; }
+.year-context summary { color: var(--ink-muted); }
+.year-context p, .year-context ul { font-size: 14px; }
+.sheet-list-section { margin-top: 24px; padding: 24px; border: 1px solid var(--border); border-radius: 16px; background: var(--paper); }
+.sheet-list-section h3 { margin: 0 0 8px; }
+.sheet-list-section > p { color: var(--ink-muted); }
+.sheet-list-section > label { margin-top: 16px; }
+.sheet-list-section input[type="search"] { width: 100%; min-width: 0; min-height: 44px; margin-top: 6px; padding: 8px 12px; border: 1px solid var(--control-border); border-radius: 8px; }
+.clear-sheet-search { margin-top: 8px; }
+.sheet-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.sheet-filters button[aria-pressed="true"] { color: var(--green); background: var(--green-tint); }
+.sheet-result-count { margin: 16px 0 8px; font-size: 14px; }
+.sheet-list { margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--border); }
+.sheet-row { min-width: 0; padding: 20px 16px; border: 1px solid var(--border); border-top: 0; background: #fff; scroll-margin-top: 24px; }
+.sheet-row.is-selected { box-shadow: inset 4px 0 var(--green); background: #f6faf6; }
+.sheet-row-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.sheet-row h4 { margin: 0; font-size: 18px; }
+.sheet-row .selected-marker { display: block; }
+.sheet-reason { margin: 8px 0; color: var(--amber-ink); }
+.sheet-year-context { margin: 8px 0; color: var(--ink-muted); font-size: 14px; }
+.sheet-metadata { margin: 12px 0 0; }
+.sheet-metadata dl { display: grid; grid-template-columns: minmax(120px, 220px) minmax(0, 1fr); gap: 8px 16px; }
+.sheet-metadata dd { margin: 0; }
+.sheet-mapping-link { display: inline-flex; align-items: center; margin-top: 8px; }
+.sheet-empty { padding: 16px; background: var(--green-tint); }
+.workbook-scope-button { margin: 24px 0 0; }
+.secondary-button { color: var(--green); background: #fff; }
 .table-scroll { max-width: 100%; overflow-x: auto; border: 1px solid var(--control-border); border-radius: 8px; }
 .table-scroll:focus-visible { outline: 3px solid var(--green); outline-offset: 4px; }
 table { width: 100%; border-collapse: collapse; background: var(--paper); }
@@ -148,6 +177,28 @@ a, summary { min-height: 44px; }
 .empty-catalog h3 { margin: 0 0 4px; }
 .empty-catalog p { margin: 0; color: var(--ink-muted); }
 .text-button { min-height: 36px; padding: 4px 10px; color: var(--green); background: #fff; }
+.project-picker, .project-comparison { margin-top: 24px; padding: 24px; border: 1px solid var(--border); border-radius: 16px; background: #fff; }
+.project-picker h3, .project-selection-heading h3 { margin: 0 0 8px; }
+.project-picker > p, .project-selection-heading p { color: var(--ink-muted); }
+.project-picker input[type="search"] { width: 100%; min-height: 44px; margin-top: 6px; padding: 8px 12px; border: 1px solid var(--control-border); border-radius: 8px; }
+.project-list, .period-picker { display: flex; gap: 10px; margin-top: 18px; overflow-x: auto; padding: 4px 4px 16px; }
+.project-list button, .period-picker button { display: flex; min-width: 0; align-items: center; justify-content: space-between; gap: 16px; color: var(--ink); background: #fff; text-align: left; }
+.project-list button { flex: 0 0 auto; width: max-content; }
+.project-list button > span:first-child { white-space: nowrap; }
+.project-list small { color: var(--ink-muted); font-weight: 400; }
+.mapping-project-notice { padding: 12px; border-left: 4px solid var(--amber-ink); background: var(--amber-tint); }
+.project-selection-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; }
+.project-selection-heading .eyebrow { text-transform: uppercase; letter-spacing: 1px; }
+.project-selection-heading p:last-child { margin-bottom: 0; }
+.period-picker button { flex: 0 0 auto; white-space: nowrap; }
+.period-picker button[aria-pressed="true"] { color: var(--green); background: var(--green-tint); }
+.period-label { color: var(--ink-muted); font-size: 13px; font-weight: 400; }
+.comparison-count { color: var(--ink-muted); }
+.comparison-grid { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(420px, 1fr); gap: 16px; max-width: 100%; overflow-x: auto; padding: 4px 4px 16px; }
+.comparison-period { min-width: 0; }
+.comparison-period > h4 { overflow-wrap: anywhere; }
+.comparison-period .selected-sheet-detail { margin-top: 12px; padding: 16px; }
+.comparison-period .status-grid { grid-template-columns: 1fr 1fr; }
 
 @media (max-width: 1100px) {
   .app-shell { grid-template-columns: 205px minmax(0, 1fr); }
@@ -170,7 +221,14 @@ a, summary { min-height: 44px; }
   .topbar { min-height: 49px; padding: 8px 16px; font-size: 14px; }
   .container { width: calc(100% - 32px); padding: 24px 0 48px; }
   .page-intro h1 { font-size: 27px; }
-  .card, .catalog-card, .workbook-preview > header, .attention-summary, .selected-sheet-detail { padding: 16px; }
+  .card, .catalog-card, .workbook-preview > header, .attention-summary, .selected-sheet-detail, .sheet-list-section { padding: 16px; }
+  .attention-item, .sheet-row-heading { align-items: flex-start; flex-direction: column; }
+  .year-context { padding: 16px; }
+  .sheet-metadata dl { grid-template-columns: 1fr; gap: 4px; }
+  .sheet-metadata dd { margin-bottom: 8px; }
+  .project-picker, .project-comparison { padding: 16px; }
+  .project-selection-heading { flex-direction: column; }
+  .comparison-grid { grid-auto-columns: minmax(280px, 85vw); }
   .upload-grid { gap: 16px; }
   .upload-actions { align-items: flex-start; flex-direction: column; }
   .section-heading { align-items: flex-start; }
